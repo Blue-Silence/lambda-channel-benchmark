@@ -1,12 +1,17 @@
 #![allow(dead_code)]
 
+use std::any::Any;
 use std::future::Future;
-use std::time::Duration;
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
-use futures::future::BoxFuture;
+use futures::{future::BoxFuture, FutureExt};
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinSet;
-use tokio::time::{sleep, Instant};
+use tokio::runtime::Handle;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::driver::latency::LatencySummary;
 
@@ -16,6 +21,7 @@ pub(crate) type PacedTask = BoxFuture<'static, Result<(), String>>;
 pub(crate) struct PacedTaskRunConfig {
     pub(crate) target_ops_per_s: f64,
     pub(crate) max_in_flight: usize,
+    pub(crate) pacer_core_id: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,41 +91,110 @@ pub(crate) async fn run_paced_tasks(
     validate_config(&config)?;
 
     let total_tasks = tasks.len();
-    let wall_start = Instant::now();
+    if total_tasks == 0 {
+        let wall_start = Instant::now();
+        let wall_time_ms = duration_ms(duration_since(Instant::now(), wall_start));
+        return Ok(build_report(
+            config.target_ops_per_s,
+            total_tasks,
+            wall_time_ms,
+            Vec::new(),
+        ));
+    }
+
     let period = Duration::from_secs_f64(1.0 / config.target_ops_per_s);
-    let mut join_set = JoinSet::new();
+    let runtime = Handle::current();
+    let available_slots = Arc::new(AtomicUsize::new(config.max_in_flight));
+    let max_in_flight = config.max_in_flight;
+    let (execution_tx, mut execution_rx) = mpsc::channel(total_tasks);
+    let (start_tx, start_rx) = oneshot::channel();
     let mut executions = Vec::with_capacity(total_tasks);
 
-    for (index, task) in tasks.into_iter().enumerate() {
-        while join_set.len() >= config.max_in_flight {
-            collect_next_execution(&mut join_set, &mut executions).await?;
-        }
-
-        let scheduled_at = wall_start + period.mul_f64(index as f64);
-        let now = Instant::now();
-        if scheduled_at > now {
-            sleep(scheduled_at - now).await;
-        }
-
-        join_set.spawn(async move {
-            let started_at = Instant::now();
-            let result = task.await;
-            let completed_at = Instant::now();
-            TaskExecution {
-                index,
-                scheduled_at,
-                started_at,
-                completed_at,
-                result,
+    let pacer_core_id = config
+        .pacer_core_id
+        .or_else(pacer_core_id_from_env)
+        .or_else(default_pacer_core_id);
+    let pacer = thread::Builder::new()
+        .name("lc-bench-pacer".to_string())
+        .spawn(move || {
+            if let Some(core_id) = pacer_core_id {
+                if let Err(err) = pin_current_thread_to_core(core_id) {
+                    eprintln!("failed to pin pacer thread to core {core_id}: {err}");
+                }
             }
-        });
+
+            let wall_start = Instant::now();
+            let _ = start_tx.send(wall_start);
+            let mut next_send_at = wall_start;
+
+            for (index, task) in tasks.into_iter().enumerate() {
+                let scheduled_at = next_send_at;
+                next_send_at += period;
+                let execution_tx = execution_tx.clone();
+                let available_slots_for_task = Arc::clone(&available_slots);
+
+                wait_until_send_time(scheduled_at, &available_slots);
+                let previous = available_slots.fetch_sub(1, Ordering::Relaxed);
+                debug_assert!(previous > 0, "pacer acquired capacity below zero");
+
+                runtime.spawn(async move {
+                    let started_at = Instant::now();
+                    let result = AssertUnwindSafe(task).catch_unwind().await;
+                    let result = match result {
+                        Ok(result) => result,
+                        Err(payload) => {
+                            Err(format!("paced task panicked: {}", panic_message(payload)))
+                        }
+                    };
+                    let completed_at = Instant::now();
+                    let previous = available_slots_for_task.fetch_add(1, Ordering::Relaxed);
+                    debug_assert!(
+                        previous < max_in_flight,
+                        "pacer released more capacity than max_in_flight"
+                    );
+                    let _ = execution_tx
+                        .send(TaskExecution {
+                            index,
+                            scheduled_at,
+                            started_at,
+                            completed_at,
+                            result,
+                        })
+                        .await;
+                });
+            }
+        })
+        .map_err(|err| format!("failed to spawn pacer thread: {err}"))?;
+
+    let wall_start = start_rx
+        .await
+        .map_err(|_| "pacer thread exited before reporting start time".to_string())?;
+
+    while executions.len() < total_tasks {
+        let Some(execution) = execution_rx.recv().await else {
+            break;
+        };
+        executions.push(execution);
     }
 
-    while !join_set.is_empty() {
-        collect_next_execution(&mut join_set, &mut executions).await?;
+    pacer
+        .join()
+        .map_err(|payload| format!("pacer thread panicked: {}", panic_message(payload)))?;
+
+    if executions.len() != total_tasks {
+        return Err(format!(
+            "paced run collected {} of {} task results",
+            executions.len(),
+            total_tasks
+        ));
     }
 
-    let wall_time_ms = duration_ms(duration_since(Instant::now(), wall_start));
+    let wall_end = executions
+        .iter()
+        .map(|execution| execution.completed_at)
+        .max()
+        .unwrap_or(wall_start);
+    let wall_time_ms = duration_ms(duration_since(wall_end, wall_start));
     Ok(build_report(
         config.target_ops_per_s,
         total_tasks,
@@ -135,18 +210,6 @@ fn validate_config(config: &PacedTaskRunConfig) -> Result<(), String> {
     if config.max_in_flight == 0 {
         return Err("max_in_flight must be greater than zero".to_string());
     }
-    Ok(())
-}
-
-async fn collect_next_execution(
-    join_set: &mut JoinSet<TaskExecution>,
-    executions: &mut Vec<TaskExecution>,
-) -> Result<(), String> {
-    let Some(next) = join_set.join_next().await else {
-        return Ok(());
-    };
-    let execution = next.map_err(|err| format!("paced task join failed: {err}"))?;
-    executions.push(execution);
     Ok(())
 }
 
@@ -237,6 +300,86 @@ fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
+fn wait_until_send_time(scheduled_at: Instant, available_slots: &AtomicUsize) {
+    while available_slots.load(Ordering::Relaxed) == 0 {
+        std::hint::spin_loop();
+    }
+    while Instant::now() < scheduled_at {
+        std::hint::spin_loop();
+    }
+}
+
+fn pacer_core_id_from_env() -> Option<usize> {
+    std::env::var("LC_BENCH_PACER_CORE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+}
+
+#[cfg(target_os = "linux")]
+fn default_pacer_core_id() -> Option<usize> {
+    let cpulist = std::fs::read_to_string("/sys/devices/system/node/node0/cpulist").ok()?;
+    highest_cpu_in_cpulist(cpulist.trim())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn default_pacer_core_id() -> Option<usize> {
+    None
+}
+
+fn highest_cpu_in_cpulist(cpulist: &str) -> Option<usize> {
+    cpulist
+        .split(',')
+        .filter_map(|part| {
+            let part = part.trim();
+            if part.is_empty() {
+                return None;
+            }
+            if let Some((_, end)) = part.split_once('-') {
+                end.trim().parse::<usize>().ok()
+            } else {
+                part.parse::<usize>().ok()
+            }
+        })
+        .max()
+}
+
+fn panic_message(payload: Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "unknown panic payload".to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn pin_current_thread_to_core(core_id: usize) -> Result<(), String> {
+    if core_id >= libc::CPU_SETSIZE as usize {
+        return Err(format!(
+            "core id {core_id} is outside CPU_SETSIZE={}",
+            libc::CPU_SETSIZE
+        ));
+    }
+
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        libc::CPU_SET(core_id, &mut set);
+        let rc = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error().to_string())
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pin_current_thread_to_core(_core_id: usize) -> Result<(), String> {
+    Err("thread affinity is only implemented on Linux".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -245,7 +388,7 @@ mod tests {
 
     use tokio::time::sleep;
 
-    use super::{boxed_task, run_paced_tasks, PacedTaskRunConfig};
+    use super::{boxed_task, highest_cpu_in_cpulist, run_paced_tasks, PacedTaskRunConfig};
 
     #[tokio::test]
     async fn rejects_invalid_config() {
@@ -254,6 +397,7 @@ mod tests {
             PacedTaskRunConfig {
                 target_ops_per_s: 0.0,
                 max_in_flight: 1,
+                pacer_core_id: None,
             },
         )
         .await
@@ -275,6 +419,7 @@ mod tests {
             PacedTaskRunConfig {
                 target_ops_per_s: 10_000.0,
                 max_in_flight: 2,
+                pacer_core_id: None,
             },
         )
         .await
@@ -311,6 +456,7 @@ mod tests {
             PacedTaskRunConfig {
                 target_ops_per_s: 1_000_000.0,
                 max_in_flight: 2,
+                pacer_core_id: None,
             },
         )
         .await
@@ -318,5 +464,12 @@ mod tests {
 
         assert_eq!(report.completed_tasks, 5);
         assert!(max_seen.load(Ordering::SeqCst) <= 2);
+    }
+
+    #[test]
+    fn parses_highest_cpu_from_cpulist() {
+        assert_eq!(highest_cpu_in_cpulist("0-3,8-11"), Some(11));
+        assert_eq!(highest_cpu_in_cpulist("2,4,6-7"), Some(7));
+        assert_eq!(highest_cpu_in_cpulist(""), None);
     }
 }

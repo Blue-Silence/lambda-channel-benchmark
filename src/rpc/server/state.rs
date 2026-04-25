@@ -54,12 +54,11 @@ pub(crate) struct ExprState {
     pub(crate) receiver: Option<ReceiverResource>,
     pub(crate) artifacts: BTreeMap<String, Artifact>,
     pub(crate) metrics: Vec<MetricRecord>,
-    pub(crate) requests: BTreeMap<String, RequestRecord>,
-    pub(crate) next_request_seq: u64,
 }
 
 #[derive(Clone)]
 pub(crate) struct RequestRecord {
+    pub(crate) run_id: String,
     pub(crate) req_id: String,
     pub(crate) kind: String,
     pub(crate) status: RequestStatus,
@@ -70,6 +69,8 @@ pub(crate) struct RequestRecord {
 #[derive(Clone, Default)]
 pub(crate) struct NodeRuntimeState {
     pub(crate) current: Option<ExprState>,
+    pub(crate) requests: BTreeMap<(String, String), RequestRecord>,
+    pub(crate) next_request_seq: u64,
     pub(crate) generation: u64,
 }
 
@@ -106,21 +107,25 @@ impl ExprState {
                 .map(|resource| format!("{}:{}", resource.channel_id, resource.consumer_id)),
         }
     }
+}
 
-    fn request_summaries(&self) -> Vec<RequestSummary> {
-        self.requests
-            .values()
-            .map(|request| RequestSummary {
-                req_id: request.req_id.clone(),
-                kind: request.kind.clone(),
-                status: request.status.clone(),
-                message: request
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| format!("{:?}", request.status)),
-            })
-            .collect()
-    }
+fn request_summaries_for_run(
+    requests: &BTreeMap<(String, String), RequestRecord>,
+    run_id: &str,
+) -> Vec<RequestSummary> {
+    requests
+        .values()
+        .filter(|request| request.run_id == run_id)
+        .map(|request| RequestSummary {
+            req_id: request.req_id.clone(),
+            kind: request.kind.clone(),
+            status: request.status.clone(),
+            message: request
+                .error
+                .clone()
+                .unwrap_or_else(|| format!("{:?}", request.status)),
+        })
+        .collect()
 }
 
 pub(crate) async fn begin_expr_on_node(
@@ -165,8 +170,6 @@ pub(crate) async fn begin_expr_on_node(
         receiver: None,
         artifacts: BTreeMap::new(),
         metrics: Vec::new(),
-        requests: BTreeMap::new(),
-        next_request_seq: 0,
     });
     runtime.generation += 1;
     Ok(())
@@ -341,7 +344,7 @@ pub(crate) async fn poll_expr_on_node(
         resources: current.resource_summary(),
         artifacts: current.artifacts.values().cloned().collect(),
         metrics: current.metrics.clone(),
-        requests: current.request_summaries(),
+        requests: request_summaries_for_run(&runtime.requests, &current.run_id),
         message: if ok {
             "expr state snapshot".to_string()
         } else {
@@ -370,33 +373,12 @@ pub(crate) async fn create_request_on_node(
     }
 
     let mut runtime = runtime.lock().await;
-    let Some(current) = runtime.current.as_mut() else {
-        return AcceptedResponse {
-            ok: false,
-            instance_id: instance_id.to_string(),
-            run_id: run_id.to_string(),
-            req_id: None,
-            message: "node has no active expr".to_string(),
-        };
-    };
-    if current.run_id != run_id {
-        return AcceptedResponse {
-            ok: false,
-            instance_id: instance_id.to_string(),
-            run_id: run_id.to_string(),
-            req_id: None,
-            message: format!(
-                "node is running run_id={}; request used run_id={run_id}",
-                current.run_id
-            ),
-        };
-    }
-
-    current.next_request_seq += 1;
-    let req_id = format!("{kind}-{:06}", current.next_request_seq);
-    current.requests.insert(
-        req_id.clone(),
+    runtime.next_request_seq += 1;
+    let req_id = format!("{kind}-{:06}", runtime.next_request_seq);
+    runtime.requests.insert(
+        (run_id.to_string(), req_id.clone()),
         RequestRecord {
+            run_id: run_id.to_string(),
             req_id: req_id.clone(),
             kind: kind.to_string(),
             status: RequestStatus::Running,
@@ -404,6 +386,13 @@ pub(crate) async fn create_request_on_node(
             error: None,
         },
     );
+    if let Some(current) = runtime
+        .current
+        .as_mut()
+        .filter(|current| current.run_id == run_id)
+    {
+        current.phase = format!("request_running:{kind}");
+    }
     runtime.generation += 1;
 
     AcceptedResponse {
@@ -422,15 +411,24 @@ pub(crate) async fn finish_request_on_node(
     result: RequestResult,
 ) -> Result<(), String> {
     let mut runtime = runtime.lock().await;
-    let current = current_expr_mut(&mut runtime, run_id)?;
-    let request = current
-        .requests
-        .get_mut(req_id)
-        .ok_or_else(|| format!("unknown req_id={req_id} for run_id={run_id}"))?;
-    request.status = RequestStatus::Finished;
-    request.result = Some(result);
-    request.error = None;
-    current.phase = format!("request_finished:{}", request.kind);
+    let key = (run_id.to_string(), req_id.to_string());
+    let kind = {
+        let request = runtime
+            .requests
+            .get_mut(&key)
+            .ok_or_else(|| format!("unknown req_id={req_id} for run_id={run_id}"))?;
+        request.status = RequestStatus::Finished;
+        request.result = Some(result);
+        request.error = None;
+        request.kind.clone()
+    };
+    if let Some(current) = runtime
+        .current
+        .as_mut()
+        .filter(|current| current.run_id == run_id)
+    {
+        current.phase = format!("request_finished:{kind}");
+    }
     runtime.generation += 1;
     Ok(())
 }
@@ -442,15 +440,24 @@ pub(crate) async fn fail_request_on_node(
     error: String,
 ) -> Result<(), String> {
     let mut runtime = runtime.lock().await;
-    let current = current_expr_mut(&mut runtime, run_id)?;
-    let request = current
-        .requests
-        .get_mut(req_id)
-        .ok_or_else(|| format!("unknown req_id={req_id} for run_id={run_id}"))?;
-    request.status = RequestStatus::Failed;
-    request.result = None;
-    request.error = Some(error);
-    current.phase = format!("request_failed:{}", request.kind);
+    let key = (run_id.to_string(), req_id.to_string());
+    let kind = {
+        let request = runtime
+            .requests
+            .get_mut(&key)
+            .ok_or_else(|| format!("unknown req_id={req_id} for run_id={run_id}"))?;
+        request.status = RequestStatus::Failed;
+        request.result = None;
+        request.error = Some(error);
+        request.kind.clone()
+    };
+    if let Some(current) = runtime
+        .current
+        .as_mut()
+        .filter(|current| current.run_id == run_id)
+    {
+        current.phase = format!("request_failed:{kind}");
+    }
     runtime.generation += 1;
     Ok(())
 }
@@ -461,36 +468,14 @@ pub(crate) async fn poll_request_on_node(
     request: PollRequestRequest,
 ) -> PollRequestResponse {
     let runtime = runtime.lock().await;
-    let Some(current) = runtime.current.as_ref() else {
-        return PollRequestResponse {
-            ok: false,
-            instance_id: instance_id.to_string(),
-            run_id: None,
-            req_id: request.req_id,
-            status: RequestStatus::Missing,
-            result: None,
-            message: "node has no active expr".to_string(),
-        };
-    };
-    if current.run_id != request.run_id {
-        return PollRequestResponse {
-            ok: false,
-            instance_id: instance_id.to_string(),
-            run_id: Some(current.run_id.clone()),
-            req_id: request.req_id,
-            status: RequestStatus::Missing,
-            result: None,
-            message: format!(
-                "node is running run_id={}; poll_request used run_id={}",
-                current.run_id, request.run_id
-            ),
-        };
-    }
-    let Some(record) = current.requests.get(&request.req_id) else {
+    let Some(record) = runtime
+        .requests
+        .get(&(request.run_id.clone(), request.req_id.clone()))
+    else {
         return PollRequestResponse {
             ok: true,
             instance_id: instance_id.to_string(),
-            run_id: Some(current.run_id.clone()),
+            run_id: Some(request.run_id),
             req_id: request.req_id,
             status: RequestStatus::Missing,
             result: None,
@@ -501,7 +486,7 @@ pub(crate) async fn poll_request_on_node(
     PollRequestResponse {
         ok: true,
         instance_id: instance_id.to_string(),
-        run_id: Some(current.run_id.clone()),
+        run_id: Some(record.run_id.clone()),
         req_id: record.req_id.clone(),
         status: record.status.clone(),
         result: record.result.clone(),

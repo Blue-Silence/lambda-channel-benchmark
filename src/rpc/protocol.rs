@@ -16,7 +16,7 @@ pub trait NodeRpc {
     async fn poll_expr(request: PollExprRequest) -> PollExprResponse;
     async fn poll_request(request: PollRequestRequest) -> PollRequestResponse;
     async fn reset_expr(request: ResetExprRequest) -> ExprActionResponse;
-    async fn run_experiment(request: RunExperimentRequest) -> RunExperimentResponse;
+    async fn submit_experiment(request: RunExperimentRequest) -> AcceptedResponse;
     async fn run_blob_get(request: RunBlobGetRequest) -> RunBlobGetResponse;
 }
 
@@ -159,6 +159,7 @@ pub enum RequestStatus {
 pub enum RequestResult {
     BlobPut(BlobPutResult),
     BlobGet(BlobGetResult),
+    Experiment(ExperimentRunResult),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -200,8 +201,7 @@ pub struct RunExperimentRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RunExperimentResponse {
-    pub ok: bool,
+pub struct ExperimentRunResult {
     pub coordinator_id: String,
     pub run_id: String,
     pub message: String,

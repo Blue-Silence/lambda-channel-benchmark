@@ -21,7 +21,7 @@ impl ThroughputSweepPolicy {
             step_multiplier: 2.0,
             max_ops_per_s: 1_000_000.0,
             max_points: 12,
-            saturation_achieved_ratio: 0.85,
+            saturation_achieved_ratio: 0.5,
             stop_on_failure: true,
         }
     }
@@ -145,12 +145,25 @@ mod tests {
     #[test]
     fn stops_when_achieved_ratio_is_low() {
         let policy = ThroughputSweepPolicy::paper_default(Some(100.0));
-        let decision = policy.decide_after(1, &report(100.0, 80.0, 0));
+        let decision = policy.decide_after(1, &report(100.0, 40.0, 0));
 
         assert_eq!(
             decision,
             SweepDecision::Stop {
                 reason: SweepStopReason::Saturated
+            }
+        );
+    }
+
+    #[test]
+    fn continues_above_half_target() {
+        let policy = ThroughputSweepPolicy::paper_default(Some(100.0));
+        let decision = policy.decide_after(1, &report(100.0, 80.0, 0));
+
+        assert_eq!(
+            decision,
+            SweepDecision::Continue {
+                next_ops_per_s: 200.0
             }
         );
     }

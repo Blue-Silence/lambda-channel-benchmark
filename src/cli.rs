@@ -145,6 +145,7 @@ impl Invocation {
 
         if command_arg == "proxy" {
             let mut rpc_addr = None;
+            let mut csv_output = None;
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--url" | "--rpc-addr" => {
@@ -160,6 +161,9 @@ impl Invocation {
                                 .to_string(),
                         )
                     }
+                    "--csv" | "--csv-output" => {
+                        csv_output = Some(PathBuf::from(required_value(&mut args, "--csv")?))
+                    }
                     "-h" | "--help" => {
                         return Ok(Self {
                             command: InvocationCommand::Help,
@@ -172,7 +176,10 @@ impl Invocation {
             }
             let rpc_addr = rpc_addr.ok_or_else(|| "proxy requires --url <rpc-addr>".to_string())?;
             return Ok(Self {
-                command: InvocationCommand::Proxy(ProxyOptions { rpc_addr }),
+                command: InvocationCommand::Proxy(ProxyOptions {
+                    rpc_addr,
+                    csv_output,
+                }),
                 bench_config: config,
                 config_paths,
             });
@@ -371,7 +378,7 @@ pub fn usage() -> &'static str {
   lc-bench <metadata|blob|sender|receiver> [options]
   lc-bench node [--instance-id <id>] [--instances <path>]
   lc-bench trigger [--coordinator <id>] [--experiment <path>] [--instances <path>]
-  lc-bench proxy --url <rpc-addr> [--experiment <path>]
+  lc-bench proxy --url <rpc-addr> [--experiment <path>] [--csv <path>]
   lc-bench blob-get --coordinator <id> --peer <id> [--backend <name>] [--count <n>] [--object-size <size>]
 
 Options:
@@ -382,6 +389,7 @@ Options:
   --warmup <n>            Warmup operation count, default: 1000
   --rate <ops/s>          Optional offered-load target
   --output <path>         Write JSON report to a file instead of stdout
+  --csv <path>            Append proxy experiment datapoints to a CSV file
   --seed <n>              Deterministic seed for generated workloads
   -h, --help              Show this help
 

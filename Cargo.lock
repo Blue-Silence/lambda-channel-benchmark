@@ -1819,6 +1819,7 @@ dependencies = [
  "aws-sdk-s3",
  "futures",
  "lambda-channel",
+ "libc",
  "serde",
  "serde_json",
  "tarpc",

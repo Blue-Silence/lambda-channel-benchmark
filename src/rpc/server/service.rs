@@ -5,17 +5,19 @@ use tokio::sync::Mutex;
 use crate::config::{experiment_summary, InstanceConfig, InstancesConfig};
 use crate::experiments::{run_blob_get_on_node, run_experiment_on_node};
 use crate::rpc::protocol::{
-    AcceptedResponse, BeginExprRequest, ExprActionResponse, GetBlobBatchRequest, HealthRequest,
-    HealthResponse, InitBlobStoreRequest, InitMetadataStoreRequest, InitReceiverRequest,
-    InitSenderRequest, NodeDescription, NodeRpc, PollExprRequest, PollExprResponse,
-    PollRequestRequest, PollRequestResponse, PutBlobBatchRequest, ResetExprRequest,
-    RunBlobGetRequest, RunBlobGetResponse, RunExperimentRequest, RunExperimentResponse,
+    AcceptedResponse, BeginExprRequest, ExperimentRunResult, ExprActionResponse,
+    GetBlobBatchRequest, HealthRequest, HealthResponse, InitBlobStoreRequest,
+    InitMetadataStoreRequest, InitReceiverRequest, InitSenderRequest, NodeDescription, NodeRpc,
+    PollExprRequest, PollExprResponse, PollRequestRequest, PollRequestResponse,
+    PutBlobBatchRequest, RequestResult, ResetExprRequest, RunBlobGetRequest, RunBlobGetResponse,
+    RunExperimentRequest,
 };
 use crate::rpc::server::blob::{
     init_blob_store_on_node, submit_blob_get_batch_on_node, submit_blob_put_batch_on_node,
 };
 use crate::rpc::server::state::{
-    action_response, begin_expr_on_node, init_metadata_store_on_node, init_receiver_on_node,
+    action_response, begin_expr_on_node, create_request_on_node, fail_request_on_node,
+    finish_request_on_node, init_metadata_store_on_node, init_receiver_on_node,
     init_sender_on_node, poll_expr_on_node, poll_request_on_node, reset_expr_on_node,
     NodeRuntimeState,
 };
@@ -165,40 +167,55 @@ impl NodeRpc for NodeRpcService {
         .await
     }
 
-    async fn run_experiment(
+    async fn submit_experiment(
         self,
         _: context::Context,
         request: RunExperimentRequest,
-    ) -> RunExperimentResponse {
+    ) -> AcceptedResponse {
         let coordinator_id = self.instance.id.clone();
         let run_id = request.experiment.run.run_id.clone();
         println!(
-            "node instance={} accepted run_experiment request for {}",
+            "node instance={} accepted submit_experiment request for {}",
             coordinator_id,
             experiment_summary(&request.experiment)
         );
 
-        match run_experiment_on_node(
-            &self.instance,
-            &self.runtime,
-            &self.instances,
-            request.experiment,
-        )
-        .await
-        {
-            Ok(message) => RunExperimentResponse {
-                ok: true,
-                coordinator_id,
-                run_id,
-                message,
-            },
-            Err(message) => RunExperimentResponse {
-                ok: false,
-                coordinator_id,
-                run_id,
-                message,
-            },
-        }
+        let accepted =
+            create_request_on_node(&coordinator_id, &self.runtime, &run_id, "experiment").await;
+        let Some(req_id) = accepted.req_id.clone() else {
+            return accepted;
+        };
+
+        let instance = self.instance.clone();
+        let runtime = self.runtime.clone();
+        let instances = self.instances.clone();
+        tokio::spawn(async move {
+            let result =
+                run_experiment_on_node(&instance, &runtime, &instances, request.experiment).await;
+            match result {
+                Ok(message) => {
+                    let result = RequestResult::Experiment(ExperimentRunResult {
+                        coordinator_id: instance.id.clone(),
+                        run_id: run_id.clone(),
+                        message,
+                    });
+                    if let Err(err) =
+                        finish_request_on_node(&runtime, &run_id, &req_id, result).await
+                    {
+                        eprintln!("failed to finish experiment request {req_id}: {err}");
+                    }
+                }
+                Err(message) => {
+                    if let Err(err) =
+                        fail_request_on_node(&runtime, &run_id, &req_id, message).await
+                    {
+                        eprintln!("failed to fail experiment request {req_id}: {err}");
+                    }
+                }
+            }
+        });
+
+        accepted
     }
 
     async fn run_blob_get(

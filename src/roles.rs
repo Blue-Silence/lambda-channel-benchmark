@@ -1,6 +1,15 @@
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
 use tarpc::context;
+use tokio::time::sleep;
 
 use crate::config::{experiment_summary, instances_summary, ExperimentSpec, InstancesConfig};
+use crate::output;
+use crate::rpc::protocol::{
+    AcceptedResponse, ExperimentRunResult, NodeRpcClient, PollRequestRequest, RequestResult,
+    RequestStatus,
+};
 use crate::rpc::{
     connect_node, connect_node_addr, serve_node, RunBlobGetRequest, RunExperimentRequest,
 };
@@ -18,6 +27,7 @@ pub struct TriggerOptions {
 #[derive(Clone, Debug)]
 pub struct ProxyOptions {
     pub rpc_addr: String,
+    pub csv_output: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -72,20 +82,8 @@ pub async fn run_trigger(
     );
 
     let client = connect_node(coordinator).await?;
-    let response = client
-        .run_experiment(context::current(), RunExperimentRequest { experiment })
-        .await
-        .map_err(|err| format!("run_experiment RPC failed for {}: {err}", coordinator.id))?;
-
-    println!(
-        "run_experiment ok={} coordinator={} run_id={} message={}",
-        response.ok, response.coordinator_id, response.run_id, response.message
-    );
-    if response.ok {
-        Ok(())
-    } else {
-        Err(response.message)
-    }
+    submit_experiment_and_wait(&client, experiment, &coordinator.id, true).await?;
+    Ok(())
 }
 
 pub async fn run_proxy(experiment: ExperimentSpec, options: ProxyOptions) -> Result<(), String> {
@@ -97,20 +95,19 @@ pub async fn run_proxy(experiment: ExperimentSpec, options: ProxyOptions) -> Res
     );
 
     let client = connect_node_addr(&options.rpc_addr).await?;
-    let response = client
-        .run_experiment(context::current(), RunExperimentRequest { experiment })
-        .await
-        .map_err(|err| format!("run_experiment RPC failed for {}: {err}", options.rpc_addr))?;
-
-    println!(
-        "run_experiment ok={} coordinator={} run_id={} message={}",
-        response.ok, response.coordinator_id, response.run_id, response.message
-    );
-    if response.ok {
-        Ok(())
-    } else {
-        Err(response.message)
+    let print_result_message = options.csv_output.is_none();
+    let result =
+        submit_experiment_and_wait(&client, experiment, &options.rpc_addr, print_result_message)
+            .await?;
+    if let Some(csv_output) = options.csv_output.as_ref() {
+        let rows = output::append_experiment_csv(csv_output, &result.message)?;
+        println!(
+            "appended {} datapoint rows to {}",
+            rows,
+            csv_output.display()
+        );
     }
+    Ok(())
 }
 
 pub async fn run_blob_get(
@@ -175,6 +172,111 @@ pub async fn run_blob_get(
         Ok(())
     } else {
         Err(response.message)
+    }
+}
+
+async fn submit_experiment_and_wait(
+    client: &NodeRpcClient,
+    experiment: ExperimentSpec,
+    target_label: &str,
+    print_result_message: bool,
+) -> Result<ExperimentRunResult, String> {
+    let accepted = client
+        .submit_experiment(context::current(), RunExperimentRequest { experiment })
+        .await
+        .map_err(|err| format!("submit_experiment RPC failed for {target_label}: {err}"))?;
+    wait_for_submitted_experiment(client, target_label, accepted, print_result_message).await
+}
+
+async fn wait_for_submitted_experiment(
+    client: &NodeRpcClient,
+    target_label: &str,
+    accepted: AcceptedResponse,
+    print_result_message: bool,
+) -> Result<ExperimentRunResult, String> {
+    if !accepted.ok {
+        return Err(format!(
+            "target {target_label} rejected submit_experiment: {}",
+            accepted.message
+        ));
+    }
+    let req_id = accepted.req_id.ok_or_else(|| {
+        format!("target {target_label} accepted submit_experiment without req_id")
+    })?;
+    println!(
+        "submit_experiment accepted target={} run_id={} req_id={} message={}",
+        target_label, accepted.run_id, req_id, accepted.message
+    );
+
+    let mut last_progress = Instant::now();
+    loop {
+        let response = client
+            .poll_request(
+                context::current(),
+                PollRequestRequest {
+                    run_id: accepted.run_id.clone(),
+                    req_id: req_id.clone(),
+                },
+            )
+            .await
+            .map_err(|err| {
+                format!("poll_request RPC failed for {target_label} req_id={req_id}: {err}")
+            })?;
+        if !response.ok {
+            return Err(format!(
+                "target {target_label} rejected poll_request req_id={req_id}: {}",
+                response.message
+            ));
+        }
+
+        match response.status {
+            RequestStatus::Running => {
+                if last_progress.elapsed() >= Duration::from_secs(5) {
+                    println!(
+                        "submit_experiment running target={} run_id={} req_id={}",
+                        target_label, accepted.run_id, req_id
+                    );
+                    last_progress = Instant::now();
+                }
+            }
+            RequestStatus::Finished => {
+                let Some(result) = response.result else {
+                    return Err(format!(
+                        "target {target_label} finished req_id={req_id} without result"
+                    ));
+                };
+                let RequestResult::Experiment(result) = result else {
+                    return Err(format!(
+                        "target {target_label} returned non-experiment result for req_id={req_id}"
+                    ));
+                };
+                if print_result_message {
+                    println!(
+                        "submit_experiment finished coordinator={} run_id={} req_id={} message={}",
+                        result.coordinator_id, result.run_id, req_id, result.message
+                    );
+                } else {
+                    println!(
+                        "submit_experiment finished coordinator={} run_id={} req_id={}",
+                        result.coordinator_id, result.run_id, req_id
+                    );
+                }
+                return Ok(result);
+            }
+            RequestStatus::Failed => {
+                return Err(format!(
+                    "target {target_label} failed submit_experiment req_id={req_id}: {}",
+                    response.message
+                ));
+            }
+            RequestStatus::Missing => {
+                return Err(format!(
+                    "target {target_label} does not know submit_experiment req_id={req_id}"
+                ));
+            }
+        }
+
+        sleep(Duration::from_millis(500)).await;
     }
 }
 

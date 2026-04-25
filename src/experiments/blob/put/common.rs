@@ -205,6 +205,7 @@ pub(super) struct PutSweepReport {
     backend: String,
     operations_per_point: u64,
     warmup_operations_per_point: u64,
+    concurrency: usize,
     object_size_bytes: u64,
     policy: ThroughputSweepPolicy,
     stop_reason: SweepStopReason,
@@ -286,6 +287,7 @@ impl PutSweepReport {
             backend: backend.to_string(),
             operations_per_point: experiment.benchmark.operations,
             warmup_operations_per_point: experiment.benchmark.warmup_operations,
+            concurrency: experiment.benchmark.concurrency,
             object_size_bytes: experiment.benchmark.object_size_bytes,
             policy,
             stop_reason,
@@ -379,10 +381,21 @@ async fn execute_put(
         PacedTaskRunConfig {
             target_ops_per_s,
             max_in_flight: experiment.benchmark.concurrency,
+            pacer_core_id: pacer_core_id_from_experiment(experiment)?,
         },
     )
     .await?;
     Ok((input_dir, paced))
+}
+
+fn pacer_core_id_from_experiment(experiment: &ExperimentSpec) -> Result<Option<usize>, String> {
+    let Some(value) = experiment.env.get("LC_BENCH_PACER_CORE") else {
+        return Ok(None);
+    };
+    value
+        .parse::<usize>()
+        .map(Some)
+        .map_err(|err| format!("failed to parse env.LC_BENCH_PACER_CORE={value:?} as usize: {err}"))
 }
 
 fn build_put_tasks(store: BlobStoreHandle, paths: &[PathBuf]) -> Vec<PacedTask> {

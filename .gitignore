@@ -1,0 +1,26 @@
+# Local developer state
+.venv/
+.codex
+.prompt.md
+.p2p-data-transfer
+.lambda-channel-paper
+
+# Rust build artifacts
+/target/
+
+# Local benchmark output
+.bench/
+out/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# CloudLab local configuration, generated bundles/logs, and secrets
+cloudlab/.config/
+cloudlab/config/
+cloudlab/.generated/
+cloudlab/.secrets/
