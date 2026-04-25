@@ -1,0 +1,23 @@
+[package]
+name = "lambda-channel-benchmark"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "lc-bench"
+path = "src/main.rs"
+
+[dependencies]
+aws-config = { version = "1", features = ["credentials-login"] }
+aws-sdk-dynamodb = "1"
+aws-sdk-s3 = "1"
+futures = "0.3"
+lambda-channel = { path = ".p2p-data-transfer/src/rust_impl", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tarpc = { version = "0.37", features = ["serde-transport-json", "tcp"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+toml = "0.8"
+
+[profile.release]
+debug = true

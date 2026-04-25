@@ -1,0 +1,43 @@
+[run]
+run_id = "blob-p2p-peer-fetch"
+workload = "blob.p2p_peer_fetch"
+description = "Fetch P2P blob chunks from a remote holder."
+output_dir = "out/blob-p2p-peer-fetch"
+seed = 1
+
+[coordination]
+rpc_timeout_ms = 5000
+barrier_timeout_ms = 30000
+cleanup_timeout_ms = 10000
+force_reset_on_start = true
+
+[benchmark]
+backend = "p2p"
+operations = 10
+concurrency = 1
+object_size_bytes = 65536
+warmup_operations = 2
+repetitions = 1
+
+[lambda_channel]
+metadata_backend = "inmemory"
+channel_id_prefix = "lcbench-p2p-peer-fetch"
+consume_mode = "competitive"
+native_worker_threads = 4
+
+[p2p]
+tracker_backend = "dynamodb"
+cache_root = ".bench/cache"
+chunk_server_bind_host = "127.0.0.1"
+chunk_server_port_base = 18080
+enable_accel = true
+accel_probability = 0.9
+persist_backend = "none"
+
+[[participants]]
+instance_id = "local-a"
+label = "holder"
+
+[[participants]]
+instance_id = "local-b"
+label = "receiver"

@@ -1,0 +1,38 @@
+[run]
+run_id = "blob-get-materialize-local"
+workload = "blob.get_materialize"
+description = "Materialize existing blob refs into local files."
+output_dir = "out/blob-get-materialize-local"
+seed = 1
+
+[coordination]
+rpc_timeout_ms = 5000
+barrier_timeout_ms = 30000
+cleanup_timeout_ms = 10000
+force_reset_on_start = true
+
+[benchmark]
+backend = "local-file"
+operations = 10
+concurrency = 1
+object_size_bytes = 65536
+warmup_operations = 2
+repetitions = 1
+
+[lambda_channel]
+metadata_backend = "inmemory"
+channel_id_prefix = "lcbench-blob-get"
+consume_mode = "competitive"
+native_worker_threads = 4
+
+[p2p]
+tracker_backend = "none"
+cache_root = ".bench/cache"
+chunk_server_bind_host = "127.0.0.1"
+chunk_server_port_base = 18080
+enable_accel = false
+persist_backend = "none"
+
+[[participants]]
+instance_id = "local-a"
+label = "worker"

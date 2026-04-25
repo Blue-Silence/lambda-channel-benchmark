@@ -1,0 +1,50 @@
+[run]
+run_id = "local-dev"
+workload = "blob-peer-fetch"
+description = "Local two-agent P2P coordination smoke configuration."
+output_dir = "out/local-dev"
+seed = 1
+
+[coordination]
+rpc_timeout_ms = 5000
+barrier_timeout_ms = 30000
+cleanup_timeout_ms = 10000
+force_reset_on_start = true
+
+[benchmark]
+backend = "p2p"
+operations = 100
+concurrency = 1
+object_size_bytes = 1048576
+warmup_operations = 10
+repetitions = 1
+
+[lambda_channel]
+metadata_backend = "inmemory"
+channel_id_prefix = "lcbench-local"
+consume_mode = "competitive"
+native_worker_threads = 4
+
+[p2p]
+tracker_backend = "dynamodb"
+cache_root = ".bench/cache"
+chunk_server_bind_host = "127.0.0.1"
+chunk_server_port_base = 18080
+enable_accel = true
+accel_probability = 0.9
+persist_backend = "none"
+
+[[participants]]
+instance_id = "local-a"
+label = "holder"
+
+[[participants]]
+instance_id = "local-b"
+label = "receiver"
+
+[env]
+AWS_REGION = "us-east-1"
+AWS_DYNAMODB_ENDPOINT_URL = "http://127.0.0.1:8000"
+P2P_DDB_TABLE = "lcbench_channel_metadata_local"
+P2P_TRACKER_TABLE_META = "lcbench_blob_meta_local"
+P2P_TRACKER_TABLE_HOLDERS = "lcbench_chunk_holders_local"
