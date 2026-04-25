@@ -1,4 +1,5 @@
 pub(crate) mod blob;
+pub(crate) mod metadata;
 
 mod dispatcher;
 

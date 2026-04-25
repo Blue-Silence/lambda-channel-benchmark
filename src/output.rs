@@ -1,5 +1,5 @@
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use crate::cli::BenchConfig;
@@ -134,6 +134,21 @@ const EXPERIMENT_CSV_HEADER: &[&str] = &[
     "store_cache_dir",
     "store_tracker_blob_meta_table",
     "store_tracker_chunk_holders_table",
+    "operation",
+    "channel_id",
+    "scan_limit",
+    "claim_target_count",
+    "metadata_table_name",
+    "metadata_region",
+    "metadata_endpoint_url",
+    "metadata_appended_count",
+    "metadata_scan_count",
+    "metadata_listed_elem_count",
+    "metadata_claim_attempt_count",
+    "metadata_claimed_count",
+    "metadata_already_consumed_count",
+    "metadata_missing_count",
+    "metadata_eof_count",
     "failure_messages",
 ];
 
@@ -154,16 +169,7 @@ pub fn append_experiment_csv(path: &Path, report_json: &str) -> Result<usize, St
         })?;
     }
 
-    let write_header = match fs::metadata(path) {
-        Ok(metadata) => metadata.len() == 0,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
-        Err(err) => {
-            return Err(format!(
-                "failed to inspect CSV output {}: {err}",
-                path.display()
-            ))
-        }
-    };
+    let write_header = csv_needs_header_or_validate(path)?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -190,8 +196,11 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
     for (index, datapoint) in datapoints.iter().enumerate() {
         let paced = datapoint.get("paced").unwrap_or(&serde_json::Value::Null);
         let store = datapoint.get("store").unwrap_or(&serde_json::Value::Null);
+        let counters = datapoint
+            .get("counters")
+            .unwrap_or(&serde_json::Value::Null);
         rows.push(vec![
-            "lambda-channel-benchmark/datapoint-v1".to_string(),
+            "lambda-channel-benchmark/datapoint-v2".to_string(),
             cell(report.get("run_id")),
             cell(report.get("workload")),
             cell(report.get("backend")),
@@ -238,10 +247,55 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
             cell(store.get("cache_dir")),
             cell(store.get("tracker_blob_meta_table")),
             cell(store.get("tracker_chunk_holders_table")),
+            cell(datapoint.get("operation")),
+            cell(datapoint.get("channel_id")),
+            cell(datapoint.get("scan_limit")),
+            cell(datapoint.get("claim_target_count")),
+            cell(store.get("table_name")),
+            cell(store.get("region")),
+            cell(store.get("endpoint_url")),
+            cell(counters.get("appended_count")),
+            cell(counters.get("scan_count")),
+            cell(counters.get("listed_elem_count")),
+            cell(counters.get("claim_attempt_count")),
+            cell(counters.get("claimed_count")),
+            cell(counters.get("already_consumed_count")),
+            cell(counters.get("missing_count")),
+            cell(counters.get("eof_count")),
             failure_messages_cell(paced.get("failure_messages")),
         ]);
     }
     Ok(rows)
+}
+
+fn csv_needs_header_or_validate(path: &Path) -> Result<bool, String> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.len() == 0 => Ok(true),
+        Ok(_) => {
+            let file = fs::File::open(path)
+                .map_err(|err| format!("failed to open CSV output {}: {err}", path.display()))?;
+            let mut reader = BufReader::new(file);
+            let mut existing_header = String::new();
+            reader
+                .read_line(&mut existing_header)
+                .map_err(|err| format!("failed to read CSV header {}: {err}", path.display()))?;
+            let existing_header = existing_header.trim_end_matches(['\r', '\n']);
+            let expected_header = EXPERIMENT_CSV_HEADER.join(",");
+            if existing_header == expected_header {
+                Ok(false)
+            } else {
+                Err(format!(
+                    "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v2 schema",
+                    path.display()
+                ))
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(format!(
+            "failed to inspect CSV output {}: {err}",
+            path.display()
+        )),
+    }
 }
 
 fn cell_at(value: &serde_json::Value, path: &[&str]) -> String {
@@ -304,5 +358,115 @@ fn csv_escape(input: &str) -> String {
         format!("\"{}\"", input.replace('"', "\"\""))
     } else {
         input.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{experiment_csv_rows, EXPERIMENT_CSV_HEADER};
+
+    #[test]
+    fn flattens_metadata_datapoints() {
+        let report = r#"{
+            "run_id": "metadata-append-dynamodb",
+            "workload": "metadata.append",
+            "instance_id": "node-0",
+            "backend": "dynamodb",
+            "operations_per_point": 1000,
+            "warmup_operations_per_point": 100,
+            "concurrency": 64,
+            "object_size_bytes": 32,
+            "stop_reason": "saturated",
+            "datapoints": [{
+                "resource_id": "res-1",
+                "channel_id": "ch-1",
+                "operation": "put_elem",
+                "scan_limit": null,
+                "claim_target_count": null,
+                "store": {
+                    "table_name": "metadata-table",
+                    "region": "us-east-1",
+                    "endpoint_url": "http://127.0.0.1:8000"
+                },
+                "counters": {
+                    "appended_count": 1000,
+                    "claimed_count": 0
+                },
+                "paced": {
+                    "target_ops_per_s": 100.0,
+                    "achieved_ops_per_s": 98.0,
+                    "successful_ops_per_s": 98.0,
+                    "total_tasks": 1000,
+                    "completed_tasks": 1000,
+                    "failed_tasks": 0,
+                    "wall_time_ms": 10200.0,
+                    "offered_latency": {"min_ms": 1.0, "mean_ms": 2.0, "p50_ms": 2.0, "p90_ms": 3.0, "p95_ms": 4.0, "p99_ms": 5.0, "max_ms": 6.0},
+                    "service_latency": {"min_ms": 1.0, "mean_ms": 2.0, "p50_ms": 2.0, "p90_ms": 3.0, "p95_ms": 4.0, "p99_ms": 5.0, "max_ms": 6.0},
+                    "schedule_lag": {"min_ms": 0.0, "mean_ms": 0.1, "p50_ms": 0.1, "p90_ms": 0.2, "p95_ms": 0.3, "p99_ms": 0.4, "max_ms": 0.5},
+                    "failure_messages": []
+                }
+            }]
+        }"#;
+
+        let rows = experiment_csv_rows(report).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), EXPERIMENT_CSV_HEADER.len());
+        assert_eq!(
+            cell(&rows[0], "schema"),
+            "lambda-channel-benchmark/datapoint-v2"
+        );
+        assert_eq!(cell(&rows[0], "workload"), "metadata.append");
+        assert_eq!(cell(&rows[0], "operation"), "put_elem");
+        assert_eq!(cell(&rows[0], "channel_id"), "ch-1");
+        assert_eq!(cell(&rows[0], "metadata_table_name"), "metadata-table");
+        assert_eq!(cell(&rows[0], "metadata_appended_count"), "1000");
+    }
+
+    #[test]
+    fn leaves_metadata_columns_empty_for_blob_datapoints() {
+        let report = r#"{
+            "run_id": "blob-put-local-file",
+            "workload": "blob.put.local_file",
+            "instance_id": "node-0",
+            "backend": "local-file",
+            "operations_per_point": 10,
+            "warmup_operations_per_point": 1,
+            "concurrency": 2,
+            "object_size_bytes": 32,
+            "stop_reason": "max_points",
+            "datapoints": [{
+                "resource_id": "res-1",
+                "store": {"root_dir": "/tmp/blob"},
+                "paced": {
+                    "target_ops_per_s": 10.0,
+                    "achieved_ops_per_s": 10.0,
+                    "successful_ops_per_s": 10.0,
+                    "total_tasks": 10,
+                    "completed_tasks": 10,
+                    "failed_tasks": 0,
+                    "wall_time_ms": 1000.0,
+                    "offered_latency": {},
+                    "service_latency": {},
+                    "schedule_lag": {},
+                    "failure_messages": []
+                }
+            }]
+        }"#;
+
+        let rows = experiment_csv_rows(report).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), EXPERIMENT_CSV_HEADER.len());
+        assert_eq!(cell(&rows[0], "workload"), "blob.put.local_file");
+        assert_eq!(cell(&rows[0], "store_root_dir"), "/tmp/blob");
+        assert_eq!(cell(&rows[0], "operation"), "");
+        assert_eq!(cell(&rows[0], "metadata_table_name"), "");
+    }
+
+    fn cell<'a>(row: &'a [String], column: &str) -> &'a str {
+        let index = EXPERIMENT_CSV_HEADER
+            .iter()
+            .position(|header| *header == column)
+            .unwrap();
+        &row[index]
     }
 }

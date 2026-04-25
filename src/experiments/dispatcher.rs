@@ -16,6 +16,9 @@ pub(crate) async fn run_experiment_on_node(
     if experiment.run.workload.starts_with("blob.") {
         return crate::experiments::blob::run(instance, runtime, instances, experiment).await;
     }
+    if experiment.run.workload.starts_with("metadata.") {
+        return crate::experiments::metadata::run(instance, runtime, instances, experiment).await;
+    }
 
     Err(format!(
         "no direct experiment runner is registered for workload {}",

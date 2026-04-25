@@ -18,7 +18,7 @@ library itself.
 ## Current CLI Shape
 
 ```bash
-cargo run -- metadata --backend inmemory --operations 100000 --concurrency 8
+cargo run -- proxy --url 127.0.0.1:19000 --experiment config/experiments/metadata/append.toml
 cargo run -- blob --backend local-file --object-size 64MiB --operations 1000
 cargo run -- sender --backend local-file --operations 10000
 cargo run -- receiver --backend local-file --operations 10000
@@ -121,6 +121,8 @@ Experiment implementation layout:
 - `src/experiments/blob/p2p_peer_fetch.rs`: remote-holder P2P fetch flow.
 - `src/experiments/blob/control.rs`: shared helpers for asking target nodes
   to begin/reset expr state, submit operations, and poll request ids.
+- `src/experiments/metadata/`: DynamoDB metadata-store experiments for append,
+  prefix scan, and local competitive claim.
 
 ## Blob Experiment Group
 
@@ -156,6 +158,21 @@ Currently implemented direct primitives:
 instead of interpreting a generic prepare/run task pipeline. Local-file
 `blob.put` and `blob.get_materialize` are wired; P2P and persist/fallback still
 need backend-specific primitives.
+
+## Metadata Experiment Group
+
+The core metadata-store experiments are intentionally narrow and use DynamoDB as
+the formal backend:
+
+- `metadata.append`: paced `put_elem` append/write path.
+- `metadata.prefix_scan`: pre-populated paced `list_elems` scan/poll path.
+- `metadata.competitive_claim.local`: one-node paced `mark_consumed`
+  competitive-claim path with success/conflict counters.
+
+Configs live under `config/experiments/metadata/`. The distributed competitive
+claim experiment is planned but not implemented yet. `proxy --csv` flattens
+these metadata reports into the shared datapoint-v2 CSV schema with metadata
+operation, channel, table, scan, and claim-counter columns.
 
 ### Planned get experiment groups
 

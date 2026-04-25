@@ -25,6 +25,8 @@ cloudlab/
 │   │   ├── allocate_profile.py
 │   │   ├── refresh_nodes.py
 │   │   ├── deploy.py
+│   │   ├── start_expr_servers.py
+│   │   ├── kill_expr_servers.py
 │   │   └── record_single.py
 │   ├── lib/
 │   │   └── nodes.py
@@ -98,6 +100,21 @@ Deploy and build on every node in `.generated/nodes.ini`:
 
 ```bash
 python cloudlab/scripts/entrypoints/deploy.py
+```
+
+Start `lc-bench node` on every CloudLab node:
+
+```bash
+python cloudlab/scripts/entrypoints/start_expr_servers.py
+```
+
+The remote nodes use the preconfigured TOML in `[runtime] remote_instances_file`.
+CloudLab hostnames are expected to match instance ids in that TOML.
+
+Stop all remote expr servers:
+
+```bash
+python cloudlab/scripts/entrypoints/kill_expr_servers.py
 ```
 
 The expected remote binary is:
@@ -180,4 +197,10 @@ If remote build fails, inspect:
 
 ```bash
 cat cloudlab/.generated/logs/node-0-build.log
+```
+
+If a remote expr server exits immediately, inspect:
+
+```bash
+ssh <cloudlab-username>@<node-hostname> 'cat /local/lc-bench-node.log'
 ```

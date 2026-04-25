@@ -20,8 +20,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from fabric import Connection
-
 ENTRYPOINT_DIR = Path(__file__).resolve().parent
 SCRIPTS_DIR = ENTRYPOINT_DIR.parent
 CLOUDLAB_DIR = SCRIPTS_DIR.parent
@@ -29,6 +27,7 @@ ROOT = CLOUDLAB_DIR.parent
 sys.path.insert(0, str(SCRIPTS_DIR / "lib"))
 
 from nodes import Node, read_nodes
+from ssh import connect
 
 
 CONFIG_FILE = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
@@ -53,23 +52,6 @@ def read_config() -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg.read(CONFIG_FILE)
     return cfg
-
-
-def connect(node: Node, cfg: configparser.ConfigParser) -> Connection:
-    ssh_key = cfg.get("deploy", "ssh_key", fallback="").strip()
-    connect_timeout = cfg.getint("deploy", "connect_timeout", fallback=30)
-
-    kwargs = {"timeout": connect_timeout}
-
-    if ssh_key:
-        kwargs["key_filename"] = str(project_path(ssh_key))
-
-    return Connection(
-        host=node.host,
-        user=node.user,
-        port=node.port,
-        connect_kwargs=kwargs,
-    )
 
 
 def remote_build_cmd(
@@ -113,7 +95,7 @@ def deploy_node(node: Node, cfg: configparser.ConfigParser, package_file: Path) 
     remote_package = f"{remote_tmp_dir}/{package_file.name}"
 
     log(f"{node.name}: connect {node.user}@{node.host}:{node.port}")
-    conn = connect(node, cfg)
+    conn = connect(node=node, cfg=cfg, project_path=project_path)
 
     try:
         log(f"{node.name}: prepare remote dirs")

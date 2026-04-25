@@ -85,7 +85,9 @@ def read_nodes(nodes_file: Path) -> list[Node]:
     if not nodes_file.exists():
         raise FileNotFoundError(
             f"nodes file not found: {nodes_file}\n"
-            "Use cloudlab/scripts/entrypoints/record_single.py for manual/debug mode, or cloudlab/scripts/entrypoints/allocate_profile.py."
+            "Use cloudlab/scripts/entrypoints/refresh_nodes.py for an existing experiment, "
+            "cloudlab/scripts/entrypoints/allocate_profile.py for a new experiment, "
+            "or cloudlab/scripts/entrypoints/record_single.py for manual/debug mode."
         )
 
     cfg = configparser.ConfigParser()
