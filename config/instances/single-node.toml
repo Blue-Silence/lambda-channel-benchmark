@@ -1,0 +1,10 @@
+[registry]
+name = "single-node"
+description = "Single node topology for local single-process or one-machine benchmark runs."
+
+[[instances]]
+id = "node-0"
+rpc_addr = "node-0:19000"
+p2p_advertise_endpoint = "http://node-0:18080"
+work_dir = ".bench/instances/node-0"
+capabilities = ["p2p", "sender", "receiver", "holder"]

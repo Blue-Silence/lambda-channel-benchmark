@@ -12,7 +12,7 @@ library itself.
 
 - `.p2p-data-transfer`: linked checkout of the library under test.
 - `.lambda-channel-paper`: linked checkout of the paper and evaluation plan.
-- `config/`: local experiment and instance-list configs for coordinated runs.
+- `config/`: local experiment specs plus topology-specific instance inventories.
 - `src/`: Rust benchmark harness.
 
 ## Current CLI Shape
@@ -60,9 +60,13 @@ return refs/metadata, collect status, and clean up run-scoped resources.
 
 Local config entry points:
 
-- `config/local-instances.toml`: node startup inventory with RPC addresses,
+- `config/instances/`: node startup inventories/topologies with RPC addresses,
   P2P advertised endpoints, per-instance work directories, and optional
   capabilities. Nodes read only this long-lived inventory when they start.
+  `local-two.toml` is the default same-host two-node topology, and
+  `single-node.toml` contains one node named `node-0`.
+- `config/local-instances.toml`: compatibility copy of the old local two-node
+  inventory.
 - `config/local-experiment.toml`: default experiment spec used by proxy or
   trigger. It contains workload, backend, benchmark knobs, coordination
   timeouts, participant labels, and environment values, then travels through
@@ -72,10 +76,17 @@ Local config entry points:
 Current coordination skeleton:
 
 ```bash
-LC_BENCH_INSTANCE_ID=local-a cargo run -- node --instances config/local-instances.toml
-LC_BENCH_INSTANCE_ID=local-b cargo run -- node --instances config/local-instances.toml
+LC_BENCH_INSTANCE_ID=local-a cargo run -- node --instances config/instances/local-two.toml
+LC_BENCH_INSTANCE_ID=local-b cargo run -- node --instances config/instances/local-two.toml
 cargo run -- proxy --url 127.0.0.1:19000 --experiment config/experiments/blob/get-materialize.toml
 cargo run -- blob-get --coordinator local-a --peer local-b --backend local-file --count 1000 --object-size 64KiB
+```
+
+Single-node topology:
+
+```bash
+cargo run -- node --instances config/instances/single-node.toml
+cargo run -- proxy --url node-0:19000 --experiment config/experiments/blob/put.toml
 ```
 
 `--instance-id` can still be passed explicitly for local development. The old
@@ -145,3 +156,25 @@ Currently implemented direct primitives:
 instead of interpreting a generic prepare/run task pipeline. Local-file
 `blob.put` and `blob.get_materialize` are wired; P2P and persist/fallback still
 need backend-specific primitives.
+
+### Planned get experiment groups
+
+The two most important future blob-store experiments are get-heavy and will
+need multi-machine coordination:
+
+1. Single getter get sweep.
+   This measures the maximum input rate one getter can sustain while tracking
+   the latency/throughput curve. Variants should include S3 direct get, P2P
+   local hit, and P2P remote get. The remote P2P variant should prepare blobs on
+   multiple serving peers so a single getter can exercise peer-side load
+   balancing. Sweep dimensions should include target ops/s and several object
+   sizes.
+
+2. Multi getter get sweep.
+   This measures the maximum output rate one serving side can sustain while
+   multiple getter instances fetch concurrently. For this group, compare S3
+   against P2P with one holder/server, usually the coordinator, and all other
+   instances acting as getters. Sweep aggregate target ops/s, divide it across
+   getters, and report both aggregate and per-getter achieved throughput and
+   latency. Sweep dimensions should include target ops/s, getter count, and
+   several object sizes.

@@ -395,13 +395,14 @@ Options:
 
 Coordination config defaults:
   --experiment config/local-experiment.toml  (proxy/trigger)
-  --instances   config/local-instances.toml  (node/trigger/blob-get)
+  --instances   config/instances/local-two.toml  (node/trigger/blob-get)
 
 Coordination runtime:
   node starts the symmetric tarpc control-plane daemon and reads only the instance list.
   trigger is the legacy id-based submitter for one experiment.
   proxy connects directly to one node URL and asks it to orchestrate one experiment.
-  node may read LC_BENCH_INSTANCE_ID when --instance-id is omitted.
+  node infers its instance id from hostname when --instance-id is omitted.
+  --instance-id and LC_BENCH_INSTANCE_ID are explicit node identity overrides.
   trigger may read LC_BENCH_COORDINATOR_ID when --coordinator is omitted.
   proxy reads only the experiment config; peer inventory comes from the target node.
   blob-get asks the selected node to initialize expr state on itself and
@@ -410,6 +411,7 @@ Coordination runtime:
 Examples:
   cargo run -- metadata --backend inmemory --operations 100000 --concurrency 8
   cargo run -- blob --backend local-file --object-size 64MiB --operations 1000
+  cargo run -- node
   LC_BENCH_INSTANCE_ID=local-a cargo run -- node
   cargo run -- proxy --url 127.0.0.1:19000 --experiment config/experiments/blob/get-materialize.toml
   cargo run -- trigger --coordinator local-a

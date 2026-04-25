@@ -39,7 +39,3 @@ chunk_server_bind_host = "127.0.0.1"
 chunk_server_port_base = 18080
 enable_accel = false
 persist_backend = "none"
-
-[[participants]]
-instance_id = "local-a"
-label = "worker"

@@ -292,13 +292,98 @@ fn resolve_node_instance_id(
             return Ok(instance_id);
         }
     }
+    if let Some(instance_id) = resolve_node_instance_id_from_local_hostname(instances)? {
+        return Ok(instance_id);
+    }
     if instances.instances.len() == 1 {
         return Ok(instances.instances[0].id.clone());
     }
     Err(
-        "node requires --instance-id or LC_BENCH_INSTANCE_ID when the instance list has more than one entry"
+        "node could not infer instance id from hostname; make the hostname match an instance id, pass --instance-id, or set LC_BENCH_INSTANCE_ID"
             .to_string(),
     )
+}
+
+fn resolve_node_instance_id_from_local_hostname(
+    instances: &InstancesConfig,
+) -> Result<Option<String>, String> {
+    let hostname = current_hostname()?;
+    resolve_node_instance_id_from_hostname(instances, &hostname)
+}
+
+fn resolve_node_instance_id_from_hostname(
+    instances: &InstancesConfig,
+    hostname: &str,
+) -> Result<Option<String>, String> {
+    for candidate in hostname_candidates(hostname) {
+        let matches = instances
+            .instances
+            .iter()
+            .filter(|instance| instance.id == candidate)
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => {}
+            [instance] => return Ok(Some(instance.id.clone())),
+            _ => {
+                return Err(format!(
+                    "hostname {hostname} ambiguously matches multiple instances named {candidate}"
+                ))
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn hostname_candidates(hostname: &str) -> Vec<String> {
+    let hostname = hostname.trim().trim_end_matches('.');
+    let mut candidates = Vec::new();
+    if !hostname.is_empty() {
+        candidates.push(hostname.to_string());
+        if let Some((short, _)) = hostname.split_once('.') {
+            if !short.is_empty() && short != hostname {
+                candidates.push(short.to_string());
+            }
+        }
+    }
+    candidates
+}
+
+#[cfg(unix)]
+fn current_hostname() -> Result<String, String> {
+    use std::ffi::CStr;
+
+    let mut buffer = [0_i8; 256];
+    let rc = unsafe { libc::gethostname(buffer.as_mut_ptr(), buffer.len()) };
+    if rc != 0 {
+        return env_hostname().ok_or_else(|| {
+            format!(
+                "failed to read hostname: {}",
+                std::io::Error::last_os_error()
+            )
+        });
+    }
+    buffer[buffer.len() - 1] = 0;
+    let hostname = unsafe { CStr::from_ptr(buffer.as_ptr()) }
+        .to_string_lossy()
+        .trim()
+        .to_string();
+    if hostname.is_empty() {
+        return env_hostname().ok_or_else(|| "hostname is empty".to_string());
+    }
+    Ok(hostname)
+}
+
+#[cfg(not(unix))]
+fn current_hostname() -> Result<String, String> {
+    env_hostname().ok_or_else(|| "failed to read hostname".to_string())
+}
+
+fn env_hostname() -> Option<String> {
+    std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn resolve_coordinator_id(
@@ -341,4 +426,61 @@ fn resolve_coordinator_id_without_experiment(
         .first()
         .map(|instance| instance.id.clone())
         .ok_or_else(|| "instances list is empty".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    use crate::config::{InstanceConfig, InstancesConfig, RegistryConfig};
+
+    use super::{hostname_candidates, resolve_node_instance_id_from_hostname};
+
+    fn instances(ids: &[&str]) -> InstancesConfig {
+        InstancesConfig {
+            registry: RegistryConfig {
+                name: "test".to_string(),
+                description: String::new(),
+            },
+            instances: ids
+                .iter()
+                .map(|id| InstanceConfig {
+                    id: (*id).to_string(),
+                    rpc_addr: format!("{id}:19000"),
+                    p2p_advertise_endpoint: format!("http://{id}:18080"),
+                    work_dir: PathBuf::from(format!(".bench/{id}")),
+                    capabilities: Vec::new(),
+                    labels: BTreeMap::new(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn hostname_candidates_try_full_then_short_name() {
+        assert_eq!(
+            hostname_candidates("node0.example.cloudlab."),
+            vec!["node0.example.cloudlab".to_string(), "node0".to_string()]
+        );
+        assert_eq!(hostname_candidates("node0"), vec!["node0".to_string()]);
+    }
+
+    #[test]
+    fn resolves_instance_from_full_hostname() {
+        let instances = instances(&["node0.example.cloudlab", "node0"]);
+        let resolved =
+            resolve_node_instance_id_from_hostname(&instances, "node0.example.cloudlab").unwrap();
+
+        assert_eq!(resolved.as_deref(), Some("node0.example.cloudlab"));
+    }
+
+    #[test]
+    fn resolves_instance_from_short_hostname_when_full_is_absent() {
+        let instances = instances(&["node0", "node1"]);
+        let resolved =
+            resolve_node_instance_id_from_hostname(&instances, "node0.example.cloudlab").unwrap();
+
+        assert_eq!(resolved.as_deref(), Some("node0"));
+    }
 }

@@ -14,7 +14,7 @@ impl Default for ConfigPaths {
     fn default() -> Self {
         Self {
             experiment: PathBuf::from("config/local-experiment.toml"),
-            instances: PathBuf::from("config/local-instances.toml"),
+            instances: PathBuf::from("config/instances/local-two.toml"),
         }
     }
 }

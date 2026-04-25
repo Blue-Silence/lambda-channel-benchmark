@@ -43,7 +43,3 @@ persist_backend = "none"
 [env]
 LC_BENCH_S3_BUCKET_PREFIX = "lcbench-blob-put"
 LC_BENCH_S3_KEY_PREFIX = "blob-put-s3"
-
-[[participants]]
-instance_id = "local-a"
-label = "worker"

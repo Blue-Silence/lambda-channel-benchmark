@@ -1,0 +1,17 @@
+[registry]
+name = "local-two-agent"
+description = "Two local agents for same-host P2P benchmark development."
+
+[[instances]]
+id = "local-a"
+rpc_addr = "127.0.0.1:19000"
+p2p_advertise_endpoint = "http://127.0.0.1:18080"
+work_dir = ".bench/instances/local-a"
+capabilities = ["p2p", "sender", "holder"]
+
+[[instances]]
+id = "local-b"
+rpc_addr = "127.0.0.1:19001"
+p2p_advertise_endpoint = "http://127.0.0.1:18081"
+work_dir = ".bench/instances/local-b"
+capabilities = ["p2p", "receiver"]

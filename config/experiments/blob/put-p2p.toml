@@ -47,7 +47,3 @@ AWS_SECRET_ACCESS_KEY = "local"
 AWS_DYNAMODB_ENDPOINT_URL = "http://127.0.0.1:8000"
 P2P_TRACKER_TABLE_META_PREFIX = "lcbench_blob_put_meta"
 P2P_TRACKER_TABLE_HOLDERS_PREFIX = "lcbench_blob_put_holders"
-
-[[participants]]
-instance_id = "local-a"
-label = "worker"
