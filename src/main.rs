@@ -14,7 +14,7 @@ use cli::{Invocation, InvocationCommand};
 use config::{load_experiment, load_instances};
 use output::BenchmarkReport;
 
-#[tokio::main]
+#[tokio::main(worker_threads = 8)]
 async fn main() -> ExitCode {
     let invocation = match Invocation::parse(std::env::args().skip(1)) {
         Ok(invocation) => invocation,

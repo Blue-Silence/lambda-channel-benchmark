@@ -124,6 +124,15 @@ python cloudlab/scripts/entrypoints/start_expr_servers.py
 The remote nodes use the preconfigured TOML in `[runtime] remote_instances_file`.
 CloudLab hostnames are expected to match instance ids in that TOML.
 
+Check whether the recorded CloudLab nodes still look deployable:
+
+```bash
+python cloudlab/scripts/entrypoints/check_experiment_ready.py
+```
+
+This is read-only. It checks the local `nodes.ini`, optional Portal status, DNS,
+and whether each node returns an SSH protocol banner on port 22.
+
 Stop all remote expr servers:
 
 ```bash

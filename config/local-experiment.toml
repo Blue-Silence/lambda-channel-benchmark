@@ -23,16 +23,17 @@ repetitions = 1
 metadata_backend = "inmemory"
 channel_id_prefix = "lcbench-local"
 consume_mode = "competitive"
-native_worker_threads = 4
 
 [p2p]
 tracker_backend = "dynamodb"
 cache_root = ".bench/cache"
 chunk_server_bind_host = "127.0.0.1"
 chunk_server_port_base = 18080
+chunk_server_runtime_worker_threads = 4
 enable_accel = true
 accel_probability = 0.9
 persist_backend = "none"
+non_abortable_task_workers = 16
 
 [[participants]]
 instance_id = "local-a"

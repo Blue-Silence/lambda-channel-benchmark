@@ -20,6 +20,7 @@ Run steps from the repository root:
 cloudlab/scripts/workflows/single_node_blob_put/00_check_local.sh
 cloudlab/scripts/workflows/single_node_blob_put/01_package.sh
 cloudlab/scripts/workflows/single_node_blob_put/02_allocate.sh
+cloudlab/scripts/workflows/single_node_blob_put/02c_check_ready.sh
 cloudlab/scripts/workflows/single_node_blob_put/03_deploy.sh
 cloudlab/scripts/workflows/single_node_blob_put/04_start_node.sh
 cloudlab/scripts/workflows/single_node_blob_put/05_run_all_puts.sh
@@ -41,6 +42,20 @@ CLOUDLAB_HOST=<cloudlab-node-host> \
 ```
 
 Then continue with `03_deploy.sh`.
+
+Before deploying, check whether the recorded node still looks ready:
+
+```bash
+cloudlab/scripts/workflows/single_node_blob_put/02c_check_ready.sh
+```
+
+The readiness check is read-only. It queries the Portal when configured, checks
+DNS resolution, and verifies that each recorded node returns an SSH protocol
+banner on port 22. If Portal access is unavailable, use:
+
+```bash
+cloudlab/scripts/workflows/single_node_blob_put/02c_check_ready.sh --skip-portal
+```
 
 Important config:
 

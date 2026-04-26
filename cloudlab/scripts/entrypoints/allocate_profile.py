@@ -406,6 +406,27 @@ def get_manifests(
     )
 
 
+TERMINAL_FAILURE_STATUSES = {
+    "canceled",
+    "cancelled",
+    "failed",
+    "terminated",
+    "terminating",
+}
+
+
+class TerminalExperimentStatus(RuntimeError):
+    pass
+
+
+def experiment_status(exp: Any) -> str:
+    if isinstance(exp, dict):
+        value = exp.get("status") or exp.get("state")
+        if value is not None:
+            return str(value).strip().lower()
+    return ""
+
+
 def wait_for_nodes(
     *,
     experiment_id: str,
@@ -429,6 +450,14 @@ def wait_for_nodes(
             )
             dump_json(CLOUDLAB_DIR / ".generated/portal_get.json", exp)
 
+            status = experiment_status(exp)
+            if status:
+                log(f"experiment status: {status}")
+            if status in TERMINAL_FAILURE_STATUSES:
+                raise TerminalExperimentStatus(
+                    f"CloudLab experiment {experiment_id} entered terminal status: {status}"
+                )
+
             manifest = get_manifests(
                 experiment_id=experiment_id,
                 portal_cli=portal_cli,
@@ -444,8 +473,16 @@ def wait_for_nodes(
                     log(f"  {node.name}: {node.user}@{node.host}:{node.port}")
                 return nodes
 
-            log("manifest available, but no nodes with hostnames found yet; retrying...")
+            if status:
+                log(
+                    "manifest available, but no nodes with hostnames found yet; "
+                    f"status={status}; retrying..."
+                )
+            else:
+                log("manifest available, but no nodes with hostnames found yet; retrying...")
 
+        except TerminalExperimentStatus:
+            raise
         except Exception as exc:
             last_error = exc
             log(f"experiment not ready yet: {exc}")

@@ -31,15 +31,17 @@ stop_on_failure = true
 metadata_backend = "dynamodb"
 channel_id_prefix = "lcbench-blob-put-p2p"
 consume_mode = "competitive"
-native_worker_threads = 4
 
 [p2p]
 tracker_backend = "dynamodb"
 cache_root = ".bench/cache"
 chunk_server_bind_host = "127.0.0.1"
 chunk_server_port_base = 18080
-enable_accel = false
+chunk_server_runtime_worker_threads = 4
+enable_accel = true
+accel_probability = 0.9
 persist_backend = "none"
+non_abortable_task_workers = 16
 
 [env]
 AWS_REGION = "us-west-2"

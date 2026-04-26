@@ -100,8 +100,9 @@ pub(super) async fn create_store(
         true,
         experiment.p2p.chunk_server_bind_host.clone(),
         bind_port,
+        experiment.p2p.chunk_server_runtime_worker_threads,
         instance.p2p_advertise_endpoint.clone(),
-        experiment.p2p.accel_probability.unwrap_or(0.0),
+        experiment.p2p.accel_probability.unwrap_or(0.9),
         experiment.p2p.enable_accel,
         enable_transfer_debug_log,
         None,
@@ -112,11 +113,7 @@ pub(super) async fn create_store(
         0.0,
         0.1,
         false,
-        experiment
-            .lambda_channel
-            .native_worker_threads
-            .unwrap_or(4)
-            .max(1),
+        experiment.p2p.non_abortable_task_workers,
     )
     .await;
 

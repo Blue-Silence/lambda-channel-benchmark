@@ -101,12 +101,16 @@ pub struct P2pConfig {
     pub cache_root: PathBuf,
     pub chunk_server_bind_host: String,
     pub chunk_server_port_base: u16,
-    #[serde(default)]
+    #[serde(default = "default_p2p_chunk_server_runtime_worker_threads")]
+    pub chunk_server_runtime_worker_threads: usize,
+    #[serde(default = "default_p2p_enable_accel")]
     pub enable_accel: bool,
     #[serde(default)]
     pub accel_probability: Option<f64>,
     #[serde(default)]
     pub persist_backend: Option<String>,
+    #[serde(default = "default_p2p_non_abortable_task_workers")]
+    pub non_abortable_task_workers: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -229,6 +233,14 @@ impl ExperimentSpec {
         }
         if self.p2p.chunk_server_bind_host.trim().is_empty() {
             return Err("p2p.chunk_server_bind_host must not be empty".to_string());
+        }
+        if self.p2p.chunk_server_runtime_worker_threads == 0 {
+            return Err(
+                "p2p.chunk_server_runtime_worker_threads must be greater than zero".to_string(),
+            );
+        }
+        if self.p2p.non_abortable_task_workers == 0 {
+            return Err("p2p.non_abortable_task_workers must be greater than zero".to_string());
         }
         if self
             .p2p
@@ -366,8 +378,8 @@ pub fn experiment_summary(experiment: &ExperimentSpec) -> String {
             "offered_rate_per_s={}, repetitions={}, ",
             "force_reset_on_start={}, participants={}, ",
             "metadata_backend={}, channel_id_prefix={}, consume_mode={}, native_worker_threads={}, ",
-            "p2p_tracker_backend={}, p2p_cache_root={}, p2p_bind_host={}, p2p_port_base={}, ",
-            "p2p_enable_accel={}, p2p_accel_probability={}, p2p_persist_backend={}, env_vars={}"
+            "p2p_tracker_backend={}, p2p_cache_root={}, p2p_bind_host={}, p2p_port_base={}, p2p_chunk_server_runtime_worker_threads={}, ",
+            "p2p_enable_accel={}, p2p_accel_probability={}, p2p_persist_backend={}, p2p_non_abortable_task_workers={}, env_vars={}"
         ),
         experiment.run.run_id,
         experiment.run.workload,
@@ -392,9 +404,11 @@ pub fn experiment_summary(experiment: &ExperimentSpec) -> String {
         experiment.p2p.cache_root.display(),
         experiment.p2p.chunk_server_bind_host,
         experiment.p2p.chunk_server_port_base,
+        experiment.p2p.chunk_server_runtime_worker_threads,
         experiment.p2p.enable_accel,
         accel_probability,
         persist_backend,
+        experiment.p2p.non_abortable_task_workers,
         experiment.env.len(),
     )
 }
@@ -419,4 +433,16 @@ where
 
 fn default_repetitions() -> u64 {
     1
+}
+
+fn default_p2p_chunk_server_runtime_worker_threads() -> usize {
+    4
+}
+
+fn default_p2p_enable_accel() -> bool {
+    true
+}
+
+fn default_p2p_non_abortable_task_workers() -> usize {
+    16
 }
