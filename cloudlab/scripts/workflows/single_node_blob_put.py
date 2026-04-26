@@ -34,6 +34,7 @@ import record_single
 import run_proxy_experiment
 import start_expr_servers
 from nodes import read_nodes
+from ssh import connect
 
 PUT_EXPERIMENTS_TINY = [
     "config/experiments/blob/put.toml",
@@ -159,6 +160,26 @@ def run_proxy_command(args: argparse.Namespace, experiment: str) -> list[str]:
     if args.rpc_url:
         command += ["--rpc-url", args.rpc_url]
     return command
+
+
+def collect_remote_node_logs(args: argparse.Namespace) -> None:
+    cfg = configparser.ConfigParser()
+    cfg.read(args.cloudlab_config)
+    nodes = read_nodes(local_path(cfg["paths"].get("nodes_file")))
+    remote_expr_log = cfg["runtime"].get("remote_expr_log", "/local/lc-bench-node.log")
+    output_dir = Path(args.csv_output).parent / "remote-logs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for node in nodes:
+        local_log = output_dir / f"{node.name}-lc-bench-node.log"
+        log(f"collect remote node log: {node.name}:{remote_expr_log} -> {local_log}")
+        conn = connect(node=node, cfg=cfg, project_path=local_path)
+        try:
+            conn.get(remote=remote_expr_log, local=str(local_log))
+        except Exception as exc:
+            log(f"collect remote node log failed for {node.name}: {exc}")
+        finally:
+            conn.close()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -336,6 +357,7 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
     )
     log(f"started nodes: {len(start_result.nodes)}")
 
+    workflow_failed = True
     try:
         # 4. Keep AWS resource deletion outside the measured datapath.
         if not args.skip_aws_gc:
@@ -358,8 +380,12 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
                     f"proxy experiment failed with exit code {proxy_result.return_code}: "
                     f"{proxy_result.experiment}"
                 )
+        workflow_failed = False
     finally:
         # 6. Always try to stop the node daemon and run local AWS GC.
+        if workflow_failed:
+            collect_remote_node_logs(args)
+
         log("stop long-lived lc-bench node daemon")
         try:
             kill_result = kill_expr_servers.main(
