@@ -47,6 +47,7 @@ TERMINAL_FAILURE_STATUSES = {
     "terminated",
     "terminating",
 }
+READY_PORTAL_STATUSES = {"ready"}
 
 
 @dataclass(frozen=True)
@@ -230,6 +231,11 @@ def check_portal(
     log("portal: status-like fields:")
     for key, value in status_fields[:20]:
         log(f"  {key} = {value!r}")
+
+    if status and status not in READY_PORTAL_STATUSES:
+        log(f"portal: NOT READY status={status}; waiting for status=ready before SSH checks")
+        return False
+
     return True
 
 
@@ -319,10 +325,13 @@ def check_once(args: argparse.Namespace) -> tuple[bool, Path, list[Node]]:
 
     all_ready = True
     if not args.skip_portal:
-        all_ready = check_portal(
+        portal_ready = check_portal(
             allocate_config=allocate_config,
             experiment_id=experiment_id,
         )
+        if not portal_ready:
+            log("not ready: CloudLab Portal has not reported ready yet")
+            return False, nodes_file, nodes
 
     for node in nodes:
         log(f"node {node.name}: {node.user}@{node.host}:{node.port}")

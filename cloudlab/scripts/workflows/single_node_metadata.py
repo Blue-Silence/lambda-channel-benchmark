@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Run the single-node CloudLab blob put workflow.
+Run the single-node CloudLab metadata workflow.
 
-This file is deliberately boring: it does what a person would do by hand,
-step by step, by calling the existing Python entrypoints.
+This file is deliberately plain: it follows the same steps a person would run
+by hand, using the existing Python entrypoints directly.
 """
 
 from __future__ import annotations
@@ -30,22 +30,21 @@ import record_single
 import run_proxy_experiment
 import start_expr_servers
 
-PUT_EXPERIMENTS = [
-    "config/experiments/blob/put.toml",
-    "config/experiments/blob/put-s3.toml",
-    "config/experiments/blob/put-p2p.toml",
+METADATA_EXPERIMENTS = [
+    "config/experiments/metadata/append.toml",
+    "config/experiments/metadata/prefix-scan.toml",
+    "config/experiments/metadata/competitive-claim-local.toml",
 ]
 
-S3_BUCKET_PREFIXES = ["lcbench-blob-put"]
 DYNAMODB_TABLE_PREFIXES = [
-    "lcbench_blob_put_meta",
-    "lcbench_blob_put_holders",
-    "lcbench-metadata-",
+    "lcbench-metadata-append",
+    "lcbench-metadata-prefix-scan",
+    "lcbench-metadata-claim-local",
 ]
 
 
 def log(message: str) -> None:
-    print(f"[single-node-blob-put] {message}", flush=True)
+    print(f"[single-node-metadata] {message}", flush=True)
 
 
 def local_path(value: str | Path) -> Path:
@@ -70,8 +69,6 @@ def gc_command(args: argparse.Namespace, mode: str) -> list[str]:
         str(args.aws_gc_workers),
         "--yes",
     ]
-    for prefix in S3_BUCKET_PREFIXES:
-        command += ["--bucket-prefix", prefix]
     for prefix in DYNAMODB_TABLE_PREFIXES:
         command += ["--table-prefix", prefix]
     return command
@@ -135,8 +132,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--experiments",
         nargs="+",
-        default=PUT_EXPERIMENTS,
-        help="blob put experiment TOMLs to run",
+        default=METADATA_EXPERIMENTS,
+        help="metadata experiment TOMLs to run",
     )
     args = parser.parse_args(argv)
 
@@ -234,12 +231,12 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
     try:
         # 4. Keep AWS resource deletion outside the measured datapath.
         if not args.skip_aws_gc:
-            log("preflight AWS GC: remove empty prefixed buckets and stale tables")
+            log("preflight AWS GC: remove stale prefixed DynamoDB tables")
             gc_result = gc_aws_resources.main(gc_command(args, "empty-only"))
             if gc_result.failures:
                 raise RuntimeError(f"preflight AWS GC had {gc_result.failures} failure(s)")
 
-        # 5. Run each blob put experiment from the local proxy.
+        # 5. Run each metadata experiment from the local proxy.
         for experiment in args.experiments:
             log(f"run proxy experiment: {experiment}")
             proxy_result = run_proxy_experiment.main(run_proxy_command(args, experiment))
@@ -265,7 +262,7 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
         except Exception as exc:
             log(f"stop node failed: {exc}")
         if not args.skip_aws_gc:
-            log("final AWS GC: force-clean prefixed benchmark resources")
+            log("final AWS GC: force-clean prefixed DynamoDB tables")
             try:
                 final_gc_result = gc_aws_resources.main(gc_command(args, "force"))
                 if final_gc_result.failures:

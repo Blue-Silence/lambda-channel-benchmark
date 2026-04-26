@@ -62,13 +62,14 @@ async fn execute(
         .ok_or_else(|| "metadata prefix scan preload count overflowed usize".to_string())?;
 
     common::create_channel(&store.handle, channel_id).await?;
-    common::put_elem_range(
+    common::put_elem_range_concurrent(
         &store.handle,
         channel_id,
         0,
         preload_count,
         payload_size,
         experiment.run.seed,
+        experiment.benchmark.concurrency,
     )
     .await?;
 

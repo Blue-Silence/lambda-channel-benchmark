@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use lambda_channel::common::{NativeMap, NativeValue};
 use lambda_channel::metadata_store::{utc_now_iso_string, ChannelMetaRecord, ElemMetaRecord};
 use lambda_channel::metadata_store_impl::dynamodb::AsyncDynamoDbMetadataStore;
@@ -447,6 +448,47 @@ pub(super) async fn put_elem_range(
             .await
             .map_err(|err| format!("failed to put warmup/preload elem seq={seq}: {err}"))?;
     }
+    Ok(())
+}
+
+pub(super) async fn put_elem_range_concurrent(
+    store: &MetadataStoreHandle,
+    channel_id: &str,
+    start_seq: usize,
+    count: usize,
+    payload_size: usize,
+    seed: u64,
+    max_in_flight: usize,
+) -> Result<(), String> {
+    let max_in_flight = max_in_flight.max(1);
+    let mut in_flight = FuturesUnordered::new();
+
+    for index in 0..count {
+        let seq = start_seq
+            .checked_add(index)
+            .ok_or_else(|| "metadata seq range overflowed usize".to_string())?;
+        let seq_i64 = i64_from_usize(seq)?;
+        let store = store.clone();
+        let channel_id = channel_id.to_string();
+
+        in_flight.push(async move {
+            store
+                .put_elem(new_elem(&channel_id, seq_i64, seed, payload_size))
+                .await
+                .map_err(|err| format!("failed to put preload elem seq={seq}: {err}"))
+        });
+
+        if in_flight.len() >= max_in_flight {
+            if let Some(result) = in_flight.next().await {
+                result?;
+            }
+        }
+    }
+
+    while let Some(result) = in_flight.next().await {
+        result?;
+    }
+
     Ok(())
 }
 
