@@ -13,6 +13,7 @@ force_reset_on_start = true
 
 [benchmark]
 operations = 1000
+duration_seconds = 10.0
 concurrency = 64
 object_size_bytes = 32
 warmup_operations = 100
@@ -41,10 +42,7 @@ enable_accel = false
 persist_backend = "none"
 
 [env]
-AWS_REGION = "us-east-1"
-AWS_ACCESS_KEY_ID = "local"
-AWS_SECRET_ACCESS_KEY = "local"
-AWS_DYNAMODB_ENDPOINT_URL = "http://127.0.0.1:8000"
+AWS_REGION = "us-west-2"
 LC_BENCH_METADATA_TABLE_PREFIX = "lcbench-metadata-append"
 LC_BENCH_METADATA_CREATE_TABLE = "true"
 LC_BENCH_METADATA_CLEANUP_TABLE = "true"

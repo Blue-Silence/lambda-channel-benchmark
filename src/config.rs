@@ -63,6 +63,8 @@ pub struct BenchmarkConfig {
     pub object_size_bytes: u64,
     pub warmup_operations: u64,
     #[serde(default)]
+    pub duration_seconds: Option<f64>,
+    #[serde(default)]
     pub offered_rate_per_s: Option<f64>,
     #[serde(default = "default_repetitions")]
     pub repetitions: u64,
@@ -191,6 +193,13 @@ impl ExperimentSpec {
         }
         if self
             .benchmark
+            .duration_seconds
+            .is_some_and(|duration| !duration.is_finite() || duration <= 0.0)
+        {
+            return Err("benchmark.duration_seconds must be a finite positive number".to_string());
+        }
+        if self
+            .benchmark
             .offered_rate_per_s
             .is_some_and(|rate| rate <= 0.0)
         {
@@ -293,6 +302,28 @@ impl ThroughputSweepConfig {
     }
 }
 
+impl BenchmarkConfig {
+    pub fn operations_for_target(&self, target_ops_per_s: f64) -> Result<u64, String> {
+        let Some(duration_seconds) = self.duration_seconds else {
+            return Ok(self.operations);
+        };
+        if !target_ops_per_s.is_finite() || target_ops_per_s <= 0.0 {
+            return Err("target_ops_per_s must be a finite positive number".to_string());
+        }
+        let operations = (target_ops_per_s * duration_seconds).ceil();
+        if !operations.is_finite() || operations <= 0.0 {
+            return Err("duration-based operations must be a finite positive number".to_string());
+        }
+        if operations > u64::MAX as f64 {
+            return Err(format!(
+                "duration_seconds={} at target_ops_per_s={} produces too many operations",
+                duration_seconds, target_ops_per_s
+            ));
+        }
+        Ok(operations as u64)
+    }
+}
+
 pub fn load_experiment(path: &Path) -> Result<ExperimentSpec, String> {
     load_toml(path)
 }
@@ -323,10 +354,15 @@ pub fn experiment_summary(experiment: &ExperimentSpec) -> String {
     } else {
         experiment.benchmark.backend.as_str()
     };
+    let duration_seconds = experiment
+        .benchmark
+        .duration_seconds
+        .map(|duration| duration.to_string())
+        .unwrap_or_else(|| "none".to_string());
     format!(
         concat!(
             "run_id={}, workload={}, description={}, output_dir={}, seed={}, ",
-            "backend={}, operations={}, concurrency={}, object_size_bytes={}, warmup_operations={}, ",
+            "backend={}, operations={}, duration_seconds={}, concurrency={}, object_size_bytes={}, warmup_operations={}, ",
             "offered_rate_per_s={}, repetitions={}, ",
             "force_reset_on_start={}, participants={}, ",
             "metadata_backend={}, channel_id_prefix={}, consume_mode={}, native_worker_threads={}, ",
@@ -340,6 +376,7 @@ pub fn experiment_summary(experiment: &ExperimentSpec) -> String {
         experiment.run.seed,
         benchmark_backend,
         experiment.benchmark.operations,
+        duration_seconds,
         experiment.benchmark.concurrency,
         experiment.benchmark.object_size_bytes,
         experiment.benchmark.warmup_operations,

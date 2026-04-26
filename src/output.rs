@@ -208,8 +208,16 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
             index.to_string(),
             cell(datapoint.get("resource_id")),
             cell(report.get("stop_reason")),
-            cell(report.get("operations_per_point")),
-            cell(report.get("warmup_operations_per_point")),
+            cell(
+                datapoint
+                    .get("operations")
+                    .or_else(|| report.get("operations_per_point")),
+            ),
+            cell(
+                datapoint
+                    .get("warmup_operations")
+                    .or_else(|| report.get("warmup_operations_per_point")),
+            ),
             cell(report.get("concurrency")),
             cell(report.get("object_size_bytes")),
             cell(paced.get("target_ops_per_s")),
@@ -460,6 +468,44 @@ mod tests {
         assert_eq!(cell(&rows[0], "store_root_dir"), "/tmp/blob");
         assert_eq!(cell(&rows[0], "operation"), "");
         assert_eq!(cell(&rows[0], "metadata_table_name"), "");
+    }
+
+    #[test]
+    fn uses_datapoint_operation_count_when_present() {
+        let report = r#"{
+            "run_id": "blob-put-local-file",
+            "workload": "blob.put.local_file",
+            "instance_id": "node-0",
+            "backend": "local-file",
+            "operations_per_point": 1000,
+            "warmup_operations_per_point": 100,
+            "concurrency": 2,
+            "object_size_bytes": 32,
+            "stop_reason": "max_points",
+            "datapoints": [{
+                "resource_id": "res-1",
+                "operations": 32000,
+                "warmup_operations": 100,
+                "store": {"root_dir": "/tmp/blob"},
+                "paced": {
+                    "target_ops_per_s": 3200.0,
+                    "achieved_ops_per_s": 3190.0,
+                    "successful_ops_per_s": 3190.0,
+                    "total_tasks": 32000,
+                    "completed_tasks": 32000,
+                    "failed_tasks": 0,
+                    "wall_time_ms": 10031.0,
+                    "offered_latency": {},
+                    "service_latency": {},
+                    "schedule_lag": {},
+                    "failure_messages": []
+                }
+            }]
+        }"#;
+
+        let rows = experiment_csv_rows(report).unwrap();
+        assert_eq!(cell(&rows[0], "operations_per_point"), "32000");
+        assert_eq!(cell(&rows[0], "warmup_operations_per_point"), "100");
     }
 
     fn cell<'a>(row: &'a [String], column: &str) -> &'a str {

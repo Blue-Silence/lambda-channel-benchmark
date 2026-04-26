@@ -27,12 +27,14 @@ cloudlab/
 │   │   ├── deploy.py
 │   │   ├── start_expr_servers.py
 │   │   ├── kill_expr_servers.py
+│   │   ├── run_proxy_experiment.py
 │   │   └── record_single.py
 │   ├── lib/
 │   │   └── nodes.py
 │   └── remote/
 │       └── remote_build.py
-├── .generated/           # generated packages, node files, logs
+├── .generated/           # generated packages, node files, deploy/build logs
+├── results/              # local experiment CSVs/proxy logs, not committed
 └── .secrets/             # local keys, not committed
 ```
 
@@ -58,16 +60,22 @@ Create local configs:
 mkdir -p cloudlab/.config
 cp cloudlab/examples/cloudlab.ini cloudlab/.config/cloudlab.ini
 cp cloudlab/examples/allocate.ini cloudlab/.config/allocate.ini
+cp cloudlab/examples/aws.env.example cloudlab/.config/aws.env
 ```
 
-Edit both files for your local environment:
+Edit the local files for your environment:
 
 ```bash
 vim cloudlab/.config/cloudlab.ini
 vim cloudlab/.config/allocate.ini
+vim cloudlab/.config/aws.env
 ```
 
-Do not commit `.config/`, `.generated/`, or `.secrets/`.
+`cloudlab/.config/aws.env` is read by `start_expr_servers.py` and injected into
+the remote `lc-bench node` daemon environment. The local proxy does not need AWS
+credentials for S3/DynamoDB datapaths; the CloudLab node daemon does.
+
+Do not commit `.config/`, `.generated/`, `results/`, or `.secrets/`.
 
 Put your CloudLab portal token here:
 
@@ -115,6 +123,45 @@ Stop all remote expr servers:
 
 ```bash
 python cloudlab/scripts/entrypoints/kill_expr_servers.py
+```
+
+Run one proxy-submitted experiment locally against the first CloudLab node in
+`.generated/nodes.ini`. CSV/log output stays on the local machine under
+`cloudlab/results/`:
+
+```bash
+python cloudlab/scripts/entrypoints/run_proxy_experiment.py \
+  --experiment config/experiments/blob/put.toml
+```
+
+For a one-node CloudLab run, set `[runtime] remote_instances_file` in
+`cloudlab/.config/cloudlab.ini` to:
+
+```text
+/local/cloudlab-workspace/config/instances/single-node.toml
+```
+
+By default, the helper connects to the selected node's public hostname on port
+19000, equivalent to:
+
+```bash
+target/release/lc-bench proxy \
+  --url <cloudlab-node-host>:19000 \
+  --experiment config/experiments/blob/put.toml \
+  --csv cloudlab/results/put/blob-put.csv
+```
+
+If direct TCP to port 19000 is unavailable, create an SSH tunnel and override
+the proxy URL:
+
+```bash
+ssh -L 19000:node-0:19000 <user>@<cloudlab-node-host>
+```
+
+```bash
+python cloudlab/scripts/entrypoints/run_proxy_experiment.py \
+  --rpc-url 127.0.0.1:19000 \
+  --experiment config/experiments/blob/put.toml
 ```
 
 The expected remote binary is:
@@ -172,6 +219,11 @@ cloudlab/.generated/
 └── logs/
     ├── node-0-build.log
     └── node-1-build.log
+
+cloudlab/results/
+└── put/
+    ├── node-0-put-20260426-014556.csv
+    └── node-0-put-20260426-014556.log
 ```
 
 ## Troubleshooting

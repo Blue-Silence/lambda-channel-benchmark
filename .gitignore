@@ -23,4 +23,8 @@ __pycache__/
 cloudlab/.config/
 cloudlab/config/
 cloudlab/.generated/
+cloudlab/results/
 cloudlab/.secrets/
+
+
+.*

@@ -133,6 +133,7 @@ pub(super) struct MetadataSweepReport {
     backend: String,
     operations_per_point: u64,
     warmup_operations_per_point: u64,
+    duration_seconds: Option<f64>,
     concurrency: usize,
     object_size_bytes: u64,
     policy: ThroughputSweepPolicy,
@@ -218,6 +219,7 @@ impl MetadataSweepReport {
             backend: backend.to_string(),
             operations_per_point: experiment.benchmark.operations,
             warmup_operations_per_point: experiment.benchmark.warmup_operations,
+            duration_seconds: experiment.benchmark.duration_seconds,
             concurrency: experiment.benchmark.concurrency,
             object_size_bytes: experiment.benchmark.object_size_bytes,
             policy,
@@ -236,6 +238,7 @@ impl MetadataDatapointReport {
         resource_id: String,
         channel_id: String,
         operation: &str,
+        operations: u64,
         store: BTreeMap<String, String>,
         paced: PacedTaskRunReport,
         counters: BTreeMap<String, u64>,
@@ -250,7 +253,7 @@ impl MetadataDatapointReport {
             resource_id,
             channel_id,
             operation: operation.to_string(),
-            operations: experiment.benchmark.operations,
+            operations,
             warmup_operations: experiment.benchmark.warmup_operations,
             object_size_bytes: experiment.benchmark.object_size_bytes,
             scan_limit,
@@ -506,8 +509,21 @@ pub(super) fn run_config(
     })
 }
 
-pub(super) fn measured_count(experiment: &ExperimentSpec) -> Result<usize, String> {
-    usize_from_u64(experiment.benchmark.operations, "benchmark.operations")
+pub(super) fn measured_operations(
+    experiment: &ExperimentSpec,
+    target_ops_per_s: f64,
+) -> Result<u64, String> {
+    experiment.benchmark.operations_for_target(target_ops_per_s)
+}
+
+pub(super) fn measured_count(
+    experiment: &ExperimentSpec,
+    target_ops_per_s: f64,
+) -> Result<usize, String> {
+    usize_from_u64(
+        measured_operations(experiment, target_ops_per_s)?,
+        "duration-based benchmark operations",
+    )
 }
 
 pub(super) fn warmup_count(experiment: &ExperimentSpec) -> Result<usize, String> {

@@ -50,6 +50,54 @@ def read_config() -> configparser.ConfigParser:
     return cfg
 
 
+def read_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        raise FileNotFoundError(f"runtime aws_env_file does not exist: {path}")
+
+    env: dict[str, str] = {}
+    for lineno, raw_line in enumerate(path.read_text().splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").strip()
+        if "=" not in line:
+            raise ValueError(f"invalid env file line {path}:{lineno}: missing '='")
+
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not name:
+            raise ValueError(f"invalid env file line {path}:{lineno}: empty variable name")
+        if not name.replace("_", "").isalnum() or name[0].isdigit():
+            raise ValueError(f"invalid env file line {path}:{lineno}: invalid variable name {name!r}")
+        if (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
+            value = value[1:-1]
+        env[name] = value
+
+    return env
+
+
+def runtime_env(runtime: configparser.SectionProxy) -> dict[str, str]:
+    env: dict[str, str] = {}
+
+    aws_env_file = runtime.get("aws_env_file", fallback="").strip()
+    if aws_env_file:
+        env.update(read_env_file(project_path(aws_env_file)))
+
+    env.update(
+        {
+            key.removeprefix("env."): value
+            for key, value in runtime.items()
+            if key.startswith("env.")
+        }
+    )
+
+    return env
+
+
 def remote_node_cmd(
     *,
     remote_binary: str,
@@ -97,11 +145,7 @@ def start_node(node: Node, cfg: configparser.ConfigParser) -> None:
     remote_expr_log = runtime.get("remote_expr_log", "/local/lc-bench-node.log")
     restart = runtime.getboolean("restart", fallback=True)
 
-    extra_env = {
-        key.removeprefix("env."): value
-        for key, value in runtime.items()
-        if key.startswith("env.")
-    }
+    extra_env = runtime_env(runtime)
 
     log(f"{node.name}: connect {node.user}@{node.host}:{node.port}")
     conn = connect(node=node, cfg=cfg, project_path=project_path)

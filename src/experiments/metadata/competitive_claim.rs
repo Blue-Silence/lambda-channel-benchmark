@@ -56,7 +56,8 @@ async fn execute(
     channel_id: &str,
     store: &common::MetadataStoreResource,
 ) -> Result<MetadataDatapointOutcome, String> {
-    let measured_count = common::measured_count(experiment)?;
+    let measured_operations = common::measured_operations(experiment, target_ops_per_s)?;
+    let measured_count = common::measured_count(experiment, target_ops_per_s)?;
     let warmup_count = common::warmup_count(experiment)?;
     let payload_size = common::payload_size(experiment)?;
     let claim_target_count = common::env_usize_any(
@@ -109,6 +110,7 @@ async fn execute(
         resource_id.to_string(),
         channel_id.to_string(),
         "mark_consumed",
+        measured_operations,
         store.details.clone(),
         paced.clone(),
         common::counter_map([

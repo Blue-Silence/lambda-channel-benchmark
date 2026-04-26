@@ -103,6 +103,7 @@ def run_portal(
     portal_cli: str,
     portal_url: str,
     portal_token: str | None,
+    echo_output: bool = True,
 ) -> Any:
     cmd = [portal_cli]
 
@@ -132,7 +133,7 @@ def run_portal(
             print(exc.stdout, end="")
         raise
 
-    if result.stdout.strip():
+    if echo_output and result.stdout.strip():
         print(result.stdout, end="")
 
     return parse_json_output(result.stdout)
@@ -187,21 +188,26 @@ def parse_nodes_from_manifest_xml(xml_text: str, ssh_user: str) -> list[Node]:
         if not node_name:
             continue
 
-        hostname: str | None = None
+        host_name: str | None = None
+        login_hostname: str | None = None
 
         for child in elem.iter():
-            if local_name(child.tag) != "host":
-                continue
+            if local_name(child.tag) == "login":
+                username = child.attrib.get("username")
+                if username == ssh_user:
+                    login_hostname = (
+                        child.attrib.get("hostname")
+                        or child.attrib.get("name")
+                        or child.attrib.get("fqdn")
+                    )
+            elif local_name(child.tag) == "host":
+                host_name = (
+                    child.attrib.get("name")
+                    or child.attrib.get("hostname")
+                    or child.attrib.get("fqdn")
+                )
 
-            hostname = (
-                child.attrib.get("name")
-                or child.attrib.get("hostname")
-                or child.attrib.get("fqdn")
-            )
-
-            if hostname:
-                break
-
+        hostname = login_hostname or host_name
         if hostname:
             nodes.append(Node(name=node_name, host=hostname, user=ssh_user, port=22))
 
@@ -243,6 +249,7 @@ def get_experiment(
         portal_cli=portal_cli,
         portal_url=portal_url,
         portal_token=portal_token,
+        echo_output=False,
     )
 
 
@@ -264,6 +271,7 @@ def get_manifests(
         portal_cli=portal_cli,
         portal_url=portal_url,
         portal_token=portal_token,
+        echo_output=False,
     )
 
 

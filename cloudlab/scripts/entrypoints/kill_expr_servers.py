@@ -64,7 +64,8 @@ def kill_node(node: Node, cfg: configparser.ConfigParser) -> None:
             "fi"
         )
         if fallback_pattern:
-            conn.run(f"pkill -f {shlex.quote(fallback_pattern)} || true")
+            safe_pattern = fallback_pattern.replace("lc-bench", "[l]c-bench")
+            conn.run(f"pkill -f {shlex.quote(safe_pattern)} || true")
         log(f"{node.name}: stopped")
 
     finally:

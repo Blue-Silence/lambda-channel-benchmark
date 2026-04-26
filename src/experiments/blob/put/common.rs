@@ -205,6 +205,7 @@ pub(super) struct PutSweepReport {
     backend: String,
     operations_per_point: u64,
     warmup_operations_per_point: u64,
+    duration_seconds: Option<f64>,
     concurrency: usize,
     object_size_bytes: u64,
     policy: ThroughputSweepPolicy,
@@ -287,6 +288,7 @@ impl PutSweepReport {
             backend: backend.to_string(),
             operations_per_point: experiment.benchmark.operations,
             warmup_operations_per_point: experiment.benchmark.warmup_operations,
+            duration_seconds: experiment.benchmark.duration_seconds,
             concurrency: experiment.benchmark.concurrency,
             object_size_bytes: experiment.benchmark.object_size_bytes,
             policy,
@@ -307,8 +309,12 @@ pub(super) async fn run_put_datapoint(
     target_ops_per_s: f64,
 ) -> Result<PutDatapointOutcome, String> {
     let object_size = object_size_usize(experiment.benchmark.object_size_bytes)?;
-    let measured_count = usize::try_from(experiment.benchmark.operations)
-        .map_err(|_| "benchmark.operations is too large for this platform".to_string())?;
+    let measured_operations = experiment
+        .benchmark
+        .operations_for_target(target_ops_per_s)?;
+    let measured_count = usize::try_from(measured_operations).map_err(|_| {
+        "duration-based benchmark operations is too large for this platform".to_string()
+    })?;
     let warmup_count = usize::try_from(experiment.benchmark.warmup_operations)
         .map_err(|_| "benchmark.warmup_operations is too large for this platform".to_string())?;
     let total_input_count = warmup_count
@@ -332,13 +338,10 @@ pub(super) async fn run_put_datapoint(
         instance_id: instance.id.clone(),
         backend: backend.to_string(),
         resource_id: resource_id.to_string(),
-        operations: experiment.benchmark.operations,
+        operations: measured_operations,
         warmup_operations: experiment.benchmark.warmup_operations,
         object_size_bytes: experiment.benchmark.object_size_bytes,
-        total_bytes: experiment
-            .benchmark
-            .operations
-            .saturating_mul(experiment.benchmark.object_size_bytes),
+        total_bytes: measured_operations.saturating_mul(experiment.benchmark.object_size_bytes),
         input_dir: path_to_string(&input_dir),
         store: store_details,
         paced: PacedRunSummary::from(paced.clone()),
