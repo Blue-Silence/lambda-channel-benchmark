@@ -279,8 +279,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--s3-max-concurrent-requests",
         type=int,
-        default=int(os.environ.get("AWS_S3_MAX_CONCURRENT_REQUESTS", "256")),
-        help="AWS CLI S3 transfer concurrency for force cleanup, default: 256",
+        default=int(os.environ.get("AWS_S3_MAX_CONCURRENT_REQUESTS", "64")),
+        help="AWS CLI S3 transfer concurrency for force cleanup, default: 64",
     )
     parser.add_argument(
         "--s3-max-queue-size",

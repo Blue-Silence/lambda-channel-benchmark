@@ -178,7 +178,7 @@ python cloudlab/scripts/entrypoints/gc_aws_resources.py \
   --table-prefix lcbench-metadata- \
   --s3-mode force \
   --workers 16 \
-  --s3-max-concurrent-requests 256 \
+  --s3-max-concurrent-requests 64 \
   --yes
 ```
 
@@ -196,7 +196,7 @@ settle time is 3 seconds and can be changed with `--settle-sec`.
 
 Final S3 cleanup uses the AWS CLI S3 transfer manager with quiet recursive
 delete, then removes the bucket. The object-level delete concurrency defaults to
-256 and can be changed with `--aws-s3-max-concurrent-requests` or
+64 and can be changed with `--aws-s3-max-concurrent-requests` or
 `AWS_S3_MAX_CONCURRENT_REQUESTS`.
 
 All datapoints from one workflow run are appended to one CSV file under

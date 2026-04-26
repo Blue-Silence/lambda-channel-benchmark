@@ -69,7 +69,7 @@ async fn execute(
         preload_count,
         payload_size,
         experiment.run.seed,
-        experiment.benchmark.concurrency,
+        common::preload_concurrency(experiment)?,
     )
     .await?;
 

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use lambda_channel::common::{NativeMap, NativeValue};
@@ -8,6 +8,7 @@ use lambda_channel::metadata_store::{utc_now_iso_string, ChannelMetaRecord, Elem
 use lambda_channel::metadata_store_impl::dynamodb::AsyncDynamoDbMetadataStore;
 use lambda_channel::metadata_store_impl::MetadataStoreHandle;
 use serde::Serialize;
+use tokio::time::sleep;
 
 use crate::config::{ExperimentSpec, InstanceConfig};
 use crate::driver::latency::LatencySummary;
@@ -436,15 +437,7 @@ pub(super) async fn put_elem_range(
         let seq = start_seq
             .checked_add(index)
             .ok_or_else(|| "metadata seq range overflowed usize".to_string())?;
-        store
-            .put_elem(new_elem(
-                channel_id,
-                i64_from_usize(seq)?,
-                seed,
-                payload_size,
-            ))
-            .await
-            .map_err(|err| format!("failed to put warmup/preload elem seq={seq}: {err}"))?;
+        put_elem_with_retry(store, channel_id, seq, seed, payload_size).await?;
     }
     Ok(())
 }
@@ -465,15 +458,11 @@ pub(super) async fn put_elem_range_concurrent(
         let seq = start_seq
             .checked_add(index)
             .ok_or_else(|| "metadata seq range overflowed usize".to_string())?;
-        let seq_i64 = i64_from_usize(seq)?;
         let store = store.clone();
         let channel_id = channel_id.to_string();
 
         in_flight.push(async move {
-            store
-                .put_elem(new_elem(&channel_id, seq_i64, seed, payload_size))
-                .await
-                .map_err(|err| format!("failed to put preload elem seq={seq}: {err}"))
+            put_elem_with_retry(&store, &channel_id, seq, seed, payload_size).await
         });
 
         if in_flight.len() >= max_in_flight {
@@ -488,6 +477,50 @@ pub(super) async fn put_elem_range_concurrent(
     }
 
     Ok(())
+}
+
+async fn put_elem_with_retry(
+    store: &MetadataStoreHandle,
+    channel_id: &str,
+    seq: usize,
+    seed: u64,
+    payload_size: usize,
+) -> Result<(), String> {
+    const MAX_ATTEMPTS: usize = 5;
+
+    let seq_i64 = i64_from_usize(seq)?;
+    let mut last_error = String::new();
+    for attempt in 1..=MAX_ATTEMPTS {
+        match store
+            .put_elem(new_elem(channel_id, seq_i64, seed, payload_size))
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last_error = format!("{err:?}");
+                if attempt < MAX_ATTEMPTS {
+                    let delay_ms = 50_u64.saturating_mul(1 << (attempt - 1));
+                    sleep(Duration::from_millis(delay_ms)).await;
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "failed to put preload elem seq={seq} after {MAX_ATTEMPTS} attempts: {last_error}"
+    ))
+}
+
+pub(super) fn preload_concurrency(experiment: &ExperimentSpec) -> Result<usize, String> {
+    Ok(env_usize_any(
+        experiment,
+        &[
+            "LC_BENCH_METADATA_PRELOAD_CONCURRENCY",
+            "METADATA_PRELOAD_CONCURRENCY",
+        ],
+    )?
+    .unwrap_or_else(|| experiment.benchmark.concurrency.min(16))
+    .max(1))
 }
 
 pub(super) fn run_config(
