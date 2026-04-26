@@ -48,6 +48,8 @@ Important config:
   - `portal_cli = /home/usera/lambda-channel-benchmark/.venv/bin/portal-cli`
   - `[profile] name = LambdaChannel-1node`
 - `cloudlab/.config/cloudlab.ini`
+  - `benchmark_source = local` if you want to deploy the current working tree,
+    including uncommitted benchmark/config changes
   - `remote_instances_file = /local/cloudlab-workspace/config/instances/single-node.toml`
   - `aws_env_file = cloudlab/.config/aws.env`
 - `cloudlab/.config/aws.env`

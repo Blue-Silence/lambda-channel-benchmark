@@ -8,6 +8,9 @@ It clones:
   1. benchmark repo
   2. private p2p-data-transfer repo
 
+Alternatively, [package] benchmark_source = local copies the current benchmark
+working tree into the package so uncommitted local changes can be deployed.
+
 Then it places the private repo at:
 
   workspace/.p2p-data-transfer
@@ -125,6 +128,29 @@ def clone_and_checkout(repo_url: str, ref: str, target_dir: Path) -> None:
     run(["git", "submodule", "update", "--init", "--recursive"], cwd=target_dir)
 
 
+def git_status_short(repo_dir: Path) -> str:
+    return run(["git", "status", "--short"], cwd=repo_dir).strip()
+
+
+def copy_local_benchmark_source(source_dir: Path, target_dir: Path) -> None:
+    source_dir = source_dir.resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    log(f"copying local benchmark working tree: {source_dir}")
+
+    for path in sorted(source_dir.rglob("*")):
+        relative = path.relative_to(source_dir)
+        if should_exclude(relative):
+            continue
+
+        target = target_dir / relative
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        elif path.is_file() or path.is_symlink():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target, follow_symlinks=False)
+
+
 def copy_remote_build_script(workspace_dir: Path) -> None:
     source = SCRIPTS_DIR / "remote" / "remote_build.py"
     if not source.exists():
@@ -182,10 +208,15 @@ def write_manifest(
 def should_exclude(relative_path: Path) -> bool:
     excluded_names = {
         ".git",
+        ".codex",
+        ".config",
         ".allocate.ini",
         ".cloudlab.ini",
         ".generated",
+        ".p2p-data-transfer",
         ".secrets",
+        ".venv",
+        "results",
         "target",
         "__pycache__",
         ".pytest_cache",
@@ -244,6 +275,7 @@ def main() -> int:
     config_path = args.config.expanduser().resolve()
     cfg = read_config(config_path)
 
+    benchmark_source = cfg.get("package", "benchmark_source", fallback="git").strip().lower()
     benchmark_repo = cfg.get("package", "benchmark_repo")
     benchmark_ref = cfg.get("package", "benchmark_ref", fallback="main")
 
@@ -265,8 +297,20 @@ def main() -> int:
 
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    log("cloning benchmark repo")
-    clone_and_checkout(benchmark_repo, benchmark_ref, workspace_dir)
+    if benchmark_source == "git":
+        log("cloning benchmark repo")
+        clone_and_checkout(benchmark_repo, benchmark_ref, workspace_dir)
+        benchmark_commit = git_head(workspace_dir)
+    elif benchmark_source == "local":
+        copy_local_benchmark_source(PROJECT_ROOT, workspace_dir)
+        benchmark_repo = str(PROJECT_ROOT)
+        benchmark_ref = "local-working-tree"
+        benchmark_commit = git_head(PROJECT_ROOT)
+        dirty = git_status_short(PROJECT_ROOT)
+        if dirty:
+            log("local benchmark working tree has uncommitted changes included in package")
+    else:
+        raise ValueError("unsupported [package] benchmark_source; expected 'git' or 'local'")
 
     if p2p_dir.exists():
         log(f"removing existing p2p dependency: {p2p_dir}")
@@ -277,7 +321,6 @@ def main() -> int:
 
     copy_remote_build_script(workspace_dir)
 
-    benchmark_commit = git_head(workspace_dir)
     p2p_commit = git_head(p2p_dir)
 
     write_manifest(

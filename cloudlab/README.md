@@ -75,6 +75,11 @@ vim cloudlab/.config/aws.env
 the remote `lc-bench node` daemon environment. The local proxy does not need AWS
 credentials for S3/DynamoDB datapaths; the CloudLab node daemon does.
 
+Set `[package] benchmark_source = local` in `cloudlab/.config/cloudlab.ini` when
+you want to deploy the current working tree, including uncommitted local changes.
+Use `benchmark_source = git` for a clean package from `benchmark_repo` and
+`benchmark_ref`.
+
 Do not commit `.config/`, `.generated/`, `results/`, or `.secrets/`.
 
 Put your CloudLab portal token here:
