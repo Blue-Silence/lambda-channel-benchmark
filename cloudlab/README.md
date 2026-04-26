@@ -175,10 +175,28 @@ python cloudlab/scripts/entrypoints/gc_aws_resources.py \
   --yes
 ```
 
-The single-node blob put workflow runs those GC steps automatically:
+The single-node blob put workflow runs those GC steps automatically. By
+default it runs all blob put object-size sets:
 
 ```bash
 python cloudlab/scripts/workflows/single_node_blob_put.py
+```
+
+All datapoints from one workflow run are appended to one CSV file under
+`[paths] results_dir` as the experiments finish. To choose the CSV path:
+
+```bash
+python cloudlab/scripts/workflows/single_node_blob_put.py \
+  --csv-output cloudlab/results/blob-put-full.csv
+```
+
+To run only one object-size set, pass one of:
+
+```bash
+python cloudlab/scripts/workflows/single_node_blob_put.py --experiment-set tiny
+python cloudlab/scripts/workflows/single_node_blob_put.py --experiment-set 16m
+python cloudlab/scripts/workflows/single_node_blob_put.py --experiment-set 128m
+python cloudlab/scripts/workflows/single_node_blob_put.py --experiment-set 1g
 ```
 
 Set `LC_BENCH_SKIP_AWS_GC=1` or pass `--skip-aws-gc` to skip cleanup for a

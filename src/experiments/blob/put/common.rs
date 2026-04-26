@@ -16,6 +16,7 @@ use crate::driver::paced::{
     boxed_task, run_paced_tasks, PacedTask, PacedTaskRunConfig, PacedTaskRunReport,
 };
 use crate::driver::sweep::{SweepStopReason, ThroughputSweepPolicy};
+use crate::payload_file::{create_timestamped_payload_file, PayloadFileSpec};
 
 pub(super) struct PutStore {
     pub(super) handle: BlobStoreHandle,
@@ -26,12 +27,8 @@ pub(super) struct PutStore {
 #[derive(Clone, Debug)]
 pub(super) enum PutCleanupResource {
     LocalDir(PathBuf),
-    S3Bucket {
-        bucket: String,
-    },
-    DynamoDbTable {
-        table_name: String,
-    },
+    S3Bucket { bucket: String },
+    DynamoDbTable { table_name: String },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -300,7 +297,7 @@ pub(super) async fn run_put_datapoint(
     store_details: BTreeMap<String, String>,
     target_ops_per_s: f64,
 ) -> Result<PutDatapointOutcome, String> {
-    let object_size = object_size_usize(experiment.benchmark.object_size_bytes)?;
+    validate_object_size(experiment.benchmark.object_size_bytes)?;
     let measured_operations = experiment
         .benchmark
         .operations_for_target(target_ops_per_s)?;
@@ -319,7 +316,7 @@ pub(super) async fn run_put_datapoint(
         experiment,
         total_input_count,
         warmup_count,
-        object_size,
+        experiment.benchmark.object_size_bytes,
         target_ops_per_s,
     )
     .await?;
@@ -348,7 +345,7 @@ async fn execute_put(
     experiment: &ExperimentSpec,
     total_input_count: usize,
     warmup_count: usize,
-    object_size: usize,
+    object_size: u64,
     target_ops_per_s: f64,
 ) -> Result<(PathBuf, crate::driver::paced::PacedTaskRunReport), String> {
     let input_dir = resource_dir.join("put-inputs");
@@ -480,7 +477,7 @@ async fn prepare_payload_files(
     run_id: &str,
     seed: u64,
     count: usize,
-    object_size: usize,
+    object_size: u64,
 ) -> Result<Vec<PathBuf>, String> {
     tokio::fs::create_dir_all(dir)
         .await
@@ -489,43 +486,19 @@ async fn prepare_payload_files(
     let mut paths = Vec::with_capacity(count);
     for index in 0..count {
         let path = dir.join(format!("object_{index:08}.bin"));
-        let payload = make_small_unique_payload(run_id, seed, index as u64, object_size);
-        tokio::fs::write(&path, payload)
-            .await
-            .map_err(|err| format!("failed to write payload {}: {err}", path.display()))?;
+        create_timestamped_payload_file(
+            &path,
+            PayloadFileSpec {
+                run_id,
+                seed,
+                index: index as u64,
+                size_bytes: object_size,
+            },
+        )
+        .await?;
         paths.push(path);
     }
     Ok(paths)
-}
-
-fn make_small_unique_payload(run_id: &str, seed: u64, index: u64, size: usize) -> Vec<u8> {
-    let mut payload = vec![0_u8; size];
-    payload[..8].copy_from_slice(&index.to_le_bytes());
-
-    let mut state = hash_run_id(run_id) ^ seed ^ index.rotate_left(17);
-    for chunk in payload[8..].chunks_mut(8) {
-        state = splitmix64(state);
-        let bytes = state.to_le_bytes();
-        chunk.copy_from_slice(&bytes[..chunk.len()]);
-    }
-    payload
-}
-
-fn hash_run_id(run_id: &str) -> u64 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in run_id.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
-
-fn splitmix64(mut value: u64) -> u64 {
-    value = value.wrapping_add(0x9e3779b97f4a7c15);
-    let mut mixed = value;
-    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d049bb133111eb);
-    mixed ^ (mixed >> 31)
 }
 
 pub(super) fn unique_resource_id(experiment: &ExperimentSpec, instance: &InstanceConfig) -> String {
@@ -655,15 +628,14 @@ pub(super) fn with_followup_errors(
     message
 }
 
-fn object_size_usize(object_size_bytes: u64) -> Result<usize, String> {
+fn validate_object_size(object_size_bytes: u64) -> Result<(), String> {
     if object_size_bytes < 8 {
         return Err(
-            "blob put object_size_bytes must be at least 8 so each tiny object can carry a unique id"
+            "blob put object_size_bytes must be at least 8 so each object can carry a timestamp"
                 .to_string(),
         );
     }
-    usize::try_from(object_size_bytes)
-        .map_err(|_| "object_size_bytes is too large for this platform".to_string())
+    Ok(())
 }
 
 pub(super) fn path_to_string(path: &Path) -> String {

@@ -9,10 +9,12 @@ step by step, by calling the existing Python entrypoints.
 from __future__ import annotations
 
 import argparse
+import configparser
 import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -30,11 +32,36 @@ import record_single
 import run_proxy_experiment
 import start_expr_servers
 
-PUT_EXPERIMENTS = [
+PUT_EXPERIMENTS_TINY = [
     "config/experiments/blob/put.toml",
     "config/experiments/blob/put-s3.toml",
     "config/experiments/blob/put-p2p.toml",
 ]
+PUT_EXPERIMENTS_16M = [
+    "config/experiments/blob/put-16m.toml",
+    "config/experiments/blob/put-s3-16m.toml",
+    "config/experiments/blob/put-p2p-16m.toml",
+]
+PUT_EXPERIMENTS_128M = [
+    "config/experiments/blob/put-128m.toml",
+    "config/experiments/blob/put-s3-128m.toml",
+    "config/experiments/blob/put-p2p-128m.toml",
+]
+PUT_EXPERIMENTS_1G = [
+    "config/experiments/blob/put-1g.toml",
+    "config/experiments/blob/put-s3-1g.toml",
+    "config/experiments/blob/put-p2p-1g.toml",
+]
+PUT_EXPERIMENT_SETS = {
+    "tiny": PUT_EXPERIMENTS_TINY,
+    "16m": PUT_EXPERIMENTS_16M,
+    "128m": PUT_EXPERIMENTS_128M,
+    "1g": PUT_EXPERIMENTS_1G,
+    "all": PUT_EXPERIMENTS_TINY
+    + PUT_EXPERIMENTS_16M
+    + PUT_EXPERIMENTS_128M
+    + PUT_EXPERIMENTS_1G,
+}
 
 S3_BUCKET_PREFIXES = ["lcbench-blob-put"]
 DYNAMODB_TABLE_PREFIXES = [
@@ -43,14 +70,30 @@ DYNAMODB_TABLE_PREFIXES = [
     "lcbench-metadata-",
 ]
 
+WORKFLOW_COLOR = "\033[1;36m"
+RESET_COLOR = "\033[0m"
+
 
 def log(message: str) -> None:
-    print(f"[single-node-blob-put] {message}", flush=True)
+    prefix = "[single-node-blob-put]"
+    if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
+        prefix = f"{WORKFLOW_COLOR}{prefix}{RESET_COLOR}"
+    print(f"\n{prefix} {message}", flush=True)
 
 
 def local_path(value: str | Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else (ROOT / path).resolve()
+
+
+def default_csv_output(cloudlab_config: str, name: str) -> Path:
+    cfg = configparser.ConfigParser()
+    cfg.read(cloudlab_config)
+    results_dir = "cloudlab/results"
+    if cfg.has_section("paths"):
+        results_dir = cfg["paths"].get("results_dir", results_dir)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return local_path(results_dir) / "workflow" / f"{name}-{stamp}.csv"
 
 
 def run(command: list[str]) -> None:
@@ -85,6 +128,8 @@ def run_proxy_command(args: argparse.Namespace, experiment: str) -> list[str]:
         args.lc_bench,
         "--experiment",
         experiment,
+        "--csv",
+        args.csv_output,
     ]
     if args.rpc_url:
         command += ["--rpc-url", args.rpc_url]
@@ -107,6 +152,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("LC_BENCH", str(ROOT / "target/release/lc-bench")),
     )
     parser.add_argument(
+        "--csv-output",
+        default=os.environ.get("BLOB_PUT_CSV_OUTPUT"),
+        help="append all workflow datapoints to this one CSV file",
+    )
+    parser.add_argument(
         "--aws-gc-workers",
         type=int,
         default=int(os.environ.get("AWS_GC_WORKERS", "16")),
@@ -115,6 +165,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--skip-allocate",
         action="store_true",
         help="use the existing nodes file instead of creating a new CloudLab experiment",
+    )
+    parser.add_argument(
+        "--skip-deploy",
+        action="store_true",
+        help="reuse the existing remote deployment instead of packaging and deploying",
     )
     parser.add_argument(
         "--record-existing-host",
@@ -135,30 +190,46 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--experiments",
         nargs="+",
-        default=PUT_EXPERIMENTS,
-        help="blob put experiment TOMLs to run",
+        help="explicit blob put experiment TOMLs to run; overrides --experiment-set",
+    )
+    parser.add_argument(
+        "--experiment-set",
+        choices=sorted(PUT_EXPERIMENT_SETS),
+        default=os.environ.get("BLOB_PUT_EXPERIMENT_SET", "all"),
+        help="predefined blob put experiment set",
     )
     args = parser.parse_args(argv)
 
     args.lc_bench = str(local_path(args.lc_bench))
     args.cloudlab_config = str(local_path(args.cloudlab_config))
     args.allocate_config = str(local_path(args.allocate_config))
-    args.experiments = [str(local_path(path)) for path in args.experiments]
+    experiments = args.experiments or PUT_EXPERIMENT_SETS[args.experiment_set]
+    args.experiments = [str(local_path(path)) for path in experiments]
+    args.csv_output = str(
+        local_path(args.csv_output)
+        if args.csv_output
+        else default_csv_output(args.cloudlab_config, "blob-put")
+    )
     return args
 
 
 def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult]:
     args = parse_args(argv)
     proxy_results: list[run_proxy_experiment.ProxyResult] = []
+    log(f"workflow CSV output: {args.csv_output}")
 
     # 0. Local sanity check and local release binary for the proxy.
     run(["cargo", "test"])
     run(["cargo", "build", "--release"])
 
-    # 1. Package the local working tree for CloudLab.
-    log("package local working tree")
-    package_result = package_entrypoint.main(["--config", args.cloudlab_config])
-    log(f"package file: {package_result.package_file}")
+    # 1. Package the local working tree for CloudLab, unless the remote
+    # deployment is already good enough to reuse.
+    if args.skip_deploy:
+        log("skip package; reusing existing remote deployment")
+    else:
+        log("package local working tree")
+        package_result = package_entrypoint.main(["--config", args.cloudlab_config])
+        log(f"package file: {package_result.package_file}")
 
     # 2. Allocate a fresh node, or record an existing one if requested.
     if args.record_existing_host:
@@ -210,17 +281,20 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
             f"CloudLab node is not ready after {ready_result.attempts} readiness attempt(s)"
         )
 
-    log("deploy bundle and build on CloudLab node")
-    deploy_result = deploy.main(["--config", args.cloudlab_config])
-    log(f"deployed nodes: {len(deploy_result.nodes)}")
+    if args.skip_deploy:
+        log("skip deploy; reusing existing remote deployment")
+    else:
+        log("deploy bundle and build on CloudLab node")
+        deploy_result = deploy.main(["--config", args.cloudlab_config])
+        log(f"deployed nodes: {len(deploy_result.nodes)}")
 
-    log("wait for CloudLab node readiness after deploy")
-    ready_result = check_experiment_ready.main(ready_args)
-    if not ready_result.ready:
-        raise RuntimeError(
-            f"CloudLab node is not ready after deploy; "
-            f"waited {ready_result.attempts} readiness attempt(s)"
-        )
+        log("wait for CloudLab node readiness after deploy")
+        ready_result = check_experiment_ready.main(ready_args)
+        if not ready_result.ready:
+            raise RuntimeError(
+                f"CloudLab node is not ready after deploy; "
+                f"waited {ready_result.attempts} readiness attempt(s)"
+            )
 
     log("start long-lived lc-bench node daemon")
     start_result = start_expr_servers.main(
@@ -278,8 +352,11 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
 
 def print_result(proxy_results: list[run_proxy_experiment.ProxyResult]) -> None:
     log("workflow finished")
+    csv_outputs = sorted({str(result.csv_output) for result in proxy_results})
+    for csv_output in csv_outputs:
+        log(f"workflow csv: {csv_output}")
     for proxy_result in proxy_results:
-        log(f"{proxy_result.experiment.name}: {proxy_result.csv_output}")
+        log(f"{proxy_result.experiment.name}: {proxy_result.log_output}")
 
 
 def cli(argv: list[str] | None = None) -> int:

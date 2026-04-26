@@ -1,0 +1,49 @@
+[run]
+run_id = "blob-put-s3-16m"
+workload = "blob.put.s3"
+description = "Measure S3 blob-store put throughput-latency sweep for 16MiB objects."
+output_dir = "out/blob-put-s3-16m"
+seed = 1
+
+[coordination]
+rpc_timeout_ms = 5000
+barrier_timeout_ms = 30000
+cleanup_timeout_ms = 10000
+force_reset_on_start = true
+
+[benchmark]
+operations = 1000
+duration_seconds = 10.0
+concurrency = 64
+object_size_bytes = 16777216
+warmup_operations = 2
+repetitions = 1
+
+[throughput_sweep]
+start_ops_per_s = 10.0
+step_multiplier = 2.0
+max_ops_per_s = 160.0
+max_points = 5
+saturation_achieved_ratio = 0.5
+stop_on_failure = true
+
+[lambda_channel]
+metadata_backend = "inmemory"
+channel_id_prefix = "lcbench-blob-put-s3-16m"
+consume_mode = "competitive"
+
+[p2p]
+tracker_backend = "none"
+cache_root = ".bench/cache"
+chunk_server_bind_host = "127.0.0.1"
+chunk_server_port_base = 18080
+chunk_server_runtime_worker_threads = 4
+enable_accel = true
+accel_probability = 0.9
+persist_backend = "none"
+non_abortable_task_workers = 16
+
+[env]
+AWS_REGION = "us-west-2"
+LC_BENCH_S3_BUCKET_PREFIX = "lcbench-blob-put"
+LC_BENCH_S3_KEY_PREFIX = "blob-put-s3-16m"

@@ -5,10 +5,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use lambda_channel::blob_store_impl::local_file_blob_store::AsyncLocalFileBlobStore;
 use lambda_channel::blob_store_impl::{BlobRefHandle, BlobStoreHandle};
 use lambda_channel::common::{NativeMap, NativeValue};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::config::InstanceConfig;
+use crate::payload_file::{create_timestamped_payload_file, PayloadFileSpec};
 use crate::rpc::protocol::{
     AcceptedResponse, BlobGetResult, BlobPutResult, GetBlobBatchRequest, InitBlobStoreRequest,
     PutBlobBatchRequest, RequestResult,
@@ -193,8 +193,16 @@ pub(crate) async fn put_blob_batch_on_node(
     let mut paths = Vec::with_capacity(request.count);
     for idx in 0..request.count {
         let path = payload_dir.join(format!("payload_{idx:06}.bin"));
-        let marker = format!("run={} idx={idx}\n", request.run_id);
-        write_payload_file(&path, request.object_size_bytes, marker.as_bytes()).await?;
+        create_timestamped_payload_file(
+            &path,
+            PayloadFileSpec {
+                run_id: &request.run_id,
+                seed: 0,
+                index: idx as u64,
+                size_bytes: request.object_size_bytes,
+            },
+        )
+        .await?;
         paths.push(path_to_string(&path));
     }
 
@@ -303,29 +311,6 @@ fn blob_refs_to_json_values(refs: &[BlobRefHandle]) -> Result<Vec<serde_json::Va
                 .map_err(|err| format!("failed to serialize blob ref: {err}"))
         })
         .collect()
-}
-
-async fn write_payload_file(path: &Path, size_bytes: u64, marker: &[u8]) -> Result<(), String> {
-    let mut file = tokio::fs::File::create(path)
-        .await
-        .map_err(|err| format!("failed to create payload {}: {err}", path.display()))?;
-    let mut block = vec![b'a'; 64 * 1024];
-    if !marker.is_empty() {
-        for (idx, byte) in block.iter_mut().enumerate() {
-            *byte = marker[idx % marker.len()];
-        }
-    }
-    let mut remaining = size_bytes;
-    while remaining > 0 {
-        let write_len = remaining.min(block.len() as u64) as usize;
-        file.write_all(&block[..write_len])
-            .await
-            .map_err(|err| format!("failed to write payload {}: {err}", path.display()))?;
-        remaining -= write_len as u64;
-    }
-    file.flush()
-        .await
-        .map_err(|err| format!("failed to flush payload {}: {err}", path.display()))
 }
 
 async fn sum_file_sizes(paths: &[String]) -> Result<u64, String> {

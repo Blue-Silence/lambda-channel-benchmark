@@ -24,9 +24,7 @@ pub(super) struct MetadataStoreResource {
 
 #[derive(Clone, Debug)]
 pub(super) enum MetadataCleanupResource {
-    DynamoDbTable {
-        table_name: String,
-    },
+    DynamoDbTable { table_name: String },
 }
 
 #[derive(Clone, Debug, Default)]

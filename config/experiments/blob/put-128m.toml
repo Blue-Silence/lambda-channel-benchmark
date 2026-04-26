@@ -1,0 +1,44 @@
+[run]
+run_id = "blob-put-local-file-128m"
+workload = "blob.put.local_file"
+description = "Measure local-file blob-store put throughput-latency sweep for 128MiB objects."
+output_dir = "out/blob-put-local-file-128m"
+seed = 1
+
+[coordination]
+rpc_timeout_ms = 5000
+barrier_timeout_ms = 30000
+cleanup_timeout_ms = 10000
+force_reset_on_start = true
+
+[benchmark]
+operations = 1000
+duration_seconds = 10.0
+concurrency = 16
+object_size_bytes = 134217728
+warmup_operations = 1
+repetitions = 1
+
+[throughput_sweep]
+start_ops_per_s = 1.0
+step_multiplier = 2.0
+max_ops_per_s = 16.0
+max_points = 5
+saturation_achieved_ratio = 0.5
+stop_on_failure = true
+
+[lambda_channel]
+metadata_backend = "inmemory"
+channel_id_prefix = "lcbench-blob-put-128m"
+consume_mode = "competitive"
+
+[p2p]
+tracker_backend = "none"
+cache_root = ".bench/cache"
+chunk_server_bind_host = "127.0.0.1"
+chunk_server_port_base = 18080
+chunk_server_runtime_worker_threads = 4
+enable_accel = true
+accel_probability = 0.9
+persist_backend = "none"
+non_abortable_task_workers = 16

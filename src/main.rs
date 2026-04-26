@@ -3,6 +3,7 @@ mod config;
 mod driver;
 mod experiments;
 mod output;
+mod payload_file;
 mod roles;
 mod rpc;
 mod workloads;
