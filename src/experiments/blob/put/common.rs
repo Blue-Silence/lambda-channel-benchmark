@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aws_config::BehaviorVersion;
-use aws_sdk_dynamodb::Client as DynamoDbClient;
 use aws_sdk_s3::config::{Credentials, Region};
 use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use aws_sdk_s3::Client as S3Client;
@@ -29,11 +28,9 @@ pub(super) enum PutCleanupResource {
     LocalDir(PathBuf),
     S3Bucket {
         bucket: String,
-        config: AwsClientConfig,
     },
     DynamoDbTable {
         table_name: String,
-        config: AwsClientConfig,
     },
 }
 
@@ -146,11 +143,6 @@ impl AwsClientConfig {
             .force_path_style(self.force_path_style)
             .build();
         Ok(S3Client::from_conf(config))
-    }
-
-    async fn build_dynamodb_client(&self) -> Result<DynamoDbClient, String> {
-        let shared_config = self.load_shared_config().await?;
-        Ok(DynamoDbClient::new(&shared_config))
     }
 
     async fn load_shared_config(&self) -> Result<aws_config::SdkConfig, String> {
@@ -435,13 +427,21 @@ pub(super) async fn cleanup_resources(resources: Vec<PutCleanupResource>) -> Res
 async fn cleanup_resource(resource: PutCleanupResource) -> Result<(), String> {
     match resource {
         PutCleanupResource::LocalDir(path) => cleanup_local_dir(&path).await,
-        PutCleanupResource::S3Bucket { bucket, config } => {
-            cleanup_s3_bucket(&bucket, &config).await
+        PutCleanupResource::S3Bucket { bucket, .. } => {
+            defer_aws_cleanup("S3 bucket", &bucket);
+            Ok(())
         }
-        PutCleanupResource::DynamoDbTable { table_name, config } => {
-            cleanup_dynamodb_table(&table_name, &config).await
+        PutCleanupResource::DynamoDbTable { table_name, .. } => {
+            defer_aws_cleanup("DynamoDB table", &table_name);
+            Ok(())
         }
     }
+}
+
+fn defer_aws_cleanup(kind: &str, name: &str) {
+    eprintln!(
+        "deferred AWS cleanup for {kind} {name}; run cloudlab/scripts/entrypoints/gc_aws_resources.py by prefix"
+    );
 }
 
 async fn cleanup_local_dir(path: &Path) -> Result<(), String> {
@@ -473,65 +473,6 @@ pub(super) async fn create_s3_bucket(
         .await
         .map(|_| ())
         .map_err(|err| format!("failed to create S3 bucket {bucket}: {err}"))
-}
-
-pub(super) async fn cleanup_s3_bucket(
-    bucket: &str,
-    config: &AwsClientConfig,
-) -> Result<(), String> {
-    let client = config.build_s3_client().await?;
-    let mut continuation_token = None;
-    loop {
-        let mut request = client.list_objects_v2().bucket(bucket);
-        if let Some(token) = continuation_token.as_deref() {
-            request = request.continuation_token(token);
-        }
-        let listed = match request.send().await {
-            Ok(listed) => listed,
-            Err(err) if aws_error_is_missing(&err) => return Ok(()),
-            Err(err) => return Err(format!("failed to list S3 bucket {bucket}: {err}")),
-        };
-        for object in listed.contents() {
-            if let Some(key) = object.key() {
-                client
-                    .delete_object()
-                    .bucket(bucket)
-                    .key(key)
-                    .send()
-                    .await
-                    .map_err(|err| {
-                        format!("failed to delete S3 object s3://{bucket}/{key}: {err}")
-                    })?;
-            }
-        }
-        if listed.is_truncated().unwrap_or(false) {
-            continuation_token = listed.next_continuation_token().map(str::to_string);
-            if continuation_token.is_none() {
-                return Err(format!(
-                    "S3 bucket {bucket} listing was truncated without a continuation token"
-                ));
-            }
-        } else {
-            break;
-        }
-    }
-
-    match client.delete_bucket().bucket(bucket).send().await {
-        Ok(_) => Ok(()),
-        Err(err) if aws_error_is_missing(&err) => Ok(()),
-        Err(err) => Err(format!("failed to delete S3 bucket {bucket}: {err}")),
-    }
-}
-
-async fn cleanup_dynamodb_table(table_name: &str, config: &AwsClientConfig) -> Result<(), String> {
-    let client = config.build_dynamodb_client().await?;
-    match client.delete_table().table_name(table_name).send().await {
-        Ok(_) => Ok(()),
-        Err(err) if aws_error_is_missing(&err) => Ok(()),
-        Err(err) => Err(format!(
-            "failed to delete DynamoDB table {table_name}: {err}"
-        )),
-    }
 }
 
 async fn prepare_payload_files(
@@ -712,15 +653,6 @@ pub(super) fn with_followup_errors(
         message.push_str(&err);
     }
     message
-}
-
-fn aws_error_is_missing(err: &(impl std::fmt::Debug + std::fmt::Display)) -> bool {
-    let detail = format!("{err} {err:?}");
-    detail.contains("NoSuchBucket")
-        || detail.contains("NoSuchKey")
-        || detail.contains("NotFound")
-        || detail.contains("NotFoundException")
-        || detail.contains("ResourceNotFoundException")
 }
 
 fn object_size_usize(object_size_bytes: u64) -> Result<usize, String> {

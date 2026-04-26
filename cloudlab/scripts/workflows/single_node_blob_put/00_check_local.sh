@@ -10,11 +10,13 @@ require_file "cloudlab/.secrets/cloudlab.jwt"
 require_file "${EXPERIMENT_TOML}"
 require_executable "${PYTHON}"
 require_executable "${PORTAL_CLI}"
+require_command "aws"
 
 require_config_value "cloudlab/.config/cloudlab.ini" "remote_instances_file" "${REMOTE_INSTANCES_FILE}"
 require_config_value "cloudlab/.config/allocate.ini" "portal_cli" "${PORTAL_CLI}"
 
 "${PORTAL_CLI}" --help >/dev/null
+aws --version >/dev/null
 
 log "running Rust tests"
 cargo test

@@ -5,6 +5,7 @@ Stop lc-bench node daemons on every CloudLab node in nodes.ini.
 
 from __future__ import annotations
 
+import argparse
 import configparser
 import shlex
 import sys
@@ -33,16 +34,27 @@ def project_path(value: str) -> Path:
     return path if path.is_absolute() else (ROOT / path).resolve()
 
 
-def read_config() -> configparser.ConfigParser:
-    if not CONFIG_FILE.exists():
+def read_config(path: Path) -> configparser.ConfigParser:
+    if not path.exists():
         raise FileNotFoundError(
-            f"Missing config file: {CONFIG_FILE}\n"
+            f"Missing config file: {path}\n"
             "Copy cloudlab/examples/cloudlab.ini to cloudlab/.config/cloudlab.ini first."
         )
 
     cfg = configparser.ConfigParser()
-    cfg.read(CONFIG_FILE)
+    cfg.read(path)
     return cfg
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=CONFIG_FILE,
+        help=f"cloudlab config file, default: {CONFIG_FILE}",
+    )
+    return parser.parse_args()
 
 
 def kill_node(node: Node, cfg: configparser.ConfigParser) -> None:
@@ -73,7 +85,8 @@ def kill_node(node: Node, cfg: configparser.ConfigParser) -> None:
 
 
 def main() -> None:
-    cfg = read_config()
+    args = parse_args()
+    cfg = read_config(args.config.expanduser().resolve())
 
     if not cfg.has_section("runtime"):
         raise ValueError("cloudlab.ini missing [runtime] section")

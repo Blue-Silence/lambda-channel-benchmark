@@ -27,6 +27,21 @@ cloudlab/scripts/workflows/single_node_blob_put/05_run_all_puts.sh
 cloudlab/scripts/workflows/single_node_blob_put/06_stop_node.sh
 ```
 
+`05_run_all_puts.sh` automatically runs local AWS garbage collection around the
+AWS-backed put workloads:
+
+- before the sweep: delete only already-empty resources with the configured
+  prefixes;
+- after the sweep, even if the proxy step exits with an error: use the AWS CLI
+  to force-delete prefixed S3 buckets and DynamoDB tables.
+
+This cleanup is intentionally outside the measured datapoints. Set
+`LC_BENCH_SKIP_AWS_GC=1` to disable it for a debugging run.
+
+The Rust experiment code defers AWS resource deletion: S3 buckets and DynamoDB
+tables created by a run are left for this local GC step, while local temporary
+directories are still removed by the experiment process.
+
 To run only the local-file put variant after the node is started:
 
 ```bash
@@ -71,6 +86,10 @@ Important config:
   - optional AWS credential environment for managed S3/DynamoDB on the remote
     node daemon. Copy `cloudlab/examples/aws.env.example` and fill it locally
     if the CloudLab node does not have an instance role.
+  - the local AWS GC helper also reads this file through `cloudlab.ini`; it does
+    not print secret values.
+- `AWS_GC_WORKERS`
+  - optional local override for AWS cleanup parallelism; default is `16`.
 
 AWS service assumptions:
 
@@ -78,6 +97,19 @@ AWS service assumptions:
   objects in `us-west-2`.
 - `blob.put.p2p`: needs permission to create/delete DynamoDB tracker tables in
   `us-west-2`.
+- local AWS cleanup needs the AWS CLI and permissions to list buckets/tables,
+  delete prefixed DynamoDB tables, and delete prefixed S3 buckets. S3 force
+  cleanup uses `aws s3 rb s3://bucket --force`.
+
+To manually rerun cleanup after an interrupted run:
+
+```bash
+# delete only empty prefixed buckets/tables
+cloudlab/scripts/workflows/single_node_blob_put/07_gc_aws.sh empty-only
+
+# force-delete prefixed S3 buckets and DynamoDB tables
+cloudlab/scripts/workflows/single_node_blob_put/07_gc_aws.sh force
+```
 
 If direct TCP to `<cloudlab-host>:19000` is blocked, create an SSH tunnel and
 run the proxy step manually:

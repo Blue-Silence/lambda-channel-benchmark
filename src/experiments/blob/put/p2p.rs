@@ -82,11 +82,9 @@ pub(super) async fn create_store(
         PutCleanupResource::LocalDir(resource_dir.to_path_buf()),
         PutCleanupResource::DynamoDbTable {
             table_name: tracker_tables.blob_meta.clone(),
-            config: aws_config.clone(),
         },
         PutCleanupResource::DynamoDbTable {
             table_name: tracker_tables.chunk_holders.clone(),
-            config: aws_config.clone(),
         },
     ];
     let promise = AsyncP2PBlobStore::new_promise(

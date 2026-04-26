@@ -25,6 +25,14 @@ services.
 - Do not use MinIO or DynamoDB Local for formal CloudLab runs.
 - Table and bucket creation/cleanup are experiment lifecycle work and should not
   be counted as measured datapath work.
+- S3/DynamoDB cleanup is local GC work, not synchronous work inside a datapoint.
+  Experiment code should defer AWS deletion and only clean local temporary
+  files. Run prefix-scoped GC before and after AWS-backed sweeps. Empty S3
+  buckets may be deleted before a run; non-empty S3 buckets should be force
+  cleaned after a run with AWS CLI cleanup. If cleanup fails, preserve the CSV
+  and rerun the GC helper by prefix.
+- Every AWS resource created by the benchmark must use a stable experiment
+  prefix so interrupted runs can be cleaned up safely.
 - Do not treat `inmemory` metadata as a formal CloudLab metadata backend.
 
 ## Runtime Principles

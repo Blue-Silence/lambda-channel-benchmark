@@ -2,9 +2,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aws_config::BehaviorVersion;
-use aws_sdk_dynamodb::config::{Credentials, Region};
-use aws_sdk_dynamodb::Client as DynamoDbClient;
 use lambda_channel::common::{NativeMap, NativeValue};
 use lambda_channel::metadata_store::{utc_now_iso_string, ChannelMetaRecord, ElemMetaRecord};
 use lambda_channel::metadata_store_impl::dynamodb::AsyncDynamoDbMetadataStore;
@@ -28,7 +25,6 @@ pub(super) struct MetadataStoreResource {
 pub(super) enum MetadataCleanupResource {
     DynamoDbTable {
         table_name: String,
-        config: AwsClientConfig,
     },
 }
 
@@ -79,39 +75,6 @@ impl AwsClientConfig {
         set_process_env("AWS_SECRET_ACCESS_KEY", self.secret_access_key.as_deref());
         set_process_env("AWS_SESSION_TOKEN", self.session_token.as_deref());
         set_process_env("AWS_PROFILE", self.profile_name.as_deref());
-    }
-
-    async fn build_dynamodb_client(&self) -> Result<DynamoDbClient, String> {
-        let mut loader = aws_config::defaults(BehaviorVersion::latest());
-        if let Some(profile_name) = self.profile_name.as_deref() {
-            loader = loader.profile_name(profile_name);
-        }
-        if let Some(region_name) = self.region_name.as_deref() {
-            loader = loader.region(Region::new(region_name.to_string()));
-        }
-        if let Some(endpoint_url) = self.endpoint_url.as_deref() {
-            loader = loader.endpoint_url(endpoint_url);
-        }
-        match (
-            self.access_key_id.as_deref(),
-            self.secret_access_key.as_deref(),
-        ) {
-            (None, None) => {}
-            (Some(access_key_id), Some(secret_access_key)) => {
-                loader = loader.credentials_provider(Credentials::new(
-                    access_key_id,
-                    secret_access_key,
-                    self.session_token.clone(),
-                    None,
-                    "lc-bench",
-                ));
-            }
-            _ => return Err(
-                "AWS config requires both access key id and secret access key when either is set"
-                    .to_string(),
-            ),
-        }
-        Ok(DynamoDbClient::new(&loader.load().await))
     }
 
     fn validated(self) -> Result<Self, String> {
@@ -367,10 +330,7 @@ pub(super) async fn create_metadata_store(
     }
 
     let cleanup = if cleanup_table {
-        vec![MetadataCleanupResource::DynamoDbTable {
-            table_name,
-            config: aws_config,
-        }]
+        vec![MetadataCleanupResource::DynamoDbTable { table_name }]
     } else {
         Vec::new()
     };
@@ -400,20 +360,12 @@ pub(super) async fn cleanup_resources(
 
 async fn cleanup_resource(resource: MetadataCleanupResource) -> Result<(), String> {
     match resource {
-        MetadataCleanupResource::DynamoDbTable { table_name, config } => {
-            cleanup_dynamodb_table(&table_name, &config).await
+        MetadataCleanupResource::DynamoDbTable { table_name, .. } => {
+            eprintln!(
+                "deferred AWS cleanup for DynamoDB table {table_name}; run cloudlab/scripts/entrypoints/gc_aws_resources.py by prefix"
+            );
+            Ok(())
         }
-    }
-}
-
-async fn cleanup_dynamodb_table(table_name: &str, config: &AwsClientConfig) -> Result<(), String> {
-    let client = config.build_dynamodb_client().await?;
-    match client.delete_table().table_name(table_name).send().await {
-        Ok(_) => Ok(()),
-        Err(err) if aws_error_is_missing(&err) => Ok(()),
-        Err(err) => Err(format!(
-            "failed to delete DynamoDB table {table_name}: {err}"
-        )),
     }
 }
 
@@ -716,9 +668,4 @@ impl IfEmpty for String {
             self
         }
     }
-}
-
-fn aws_error_is_missing(err: &impl std::fmt::Display) -> bool {
-    let message = err.to_string();
-    message.contains("ResourceNotFoundException") || message.contains("NotFound")
 }

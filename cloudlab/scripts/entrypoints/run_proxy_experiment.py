@@ -39,15 +39,15 @@ def project_path(value: str) -> Path:
     return path if path.is_absolute() else (ROOT / path).resolve()
 
 
-def read_config() -> configparser.ConfigParser:
-    if not CONFIG_FILE.exists():
+def read_config(path: Path) -> configparser.ConfigParser:
+    if not path.exists():
         raise FileNotFoundError(
-            f"Missing config file: {CONFIG_FILE}\n"
+            f"Missing config file: {path}\n"
             "Copy cloudlab/examples/cloudlab.ini to cloudlab/.config/cloudlab.ini first."
         )
 
     cfg = configparser.ConfigParser()
-    cfg.read(CONFIG_FILE)
+    cfg.read(path)
     return cfg
 
 
@@ -110,6 +110,12 @@ def run_proxy(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=CONFIG_FILE,
+        help=f"cloudlab config file, default: {CONFIG_FILE}",
+    )
+    parser.add_argument(
         "--node-name",
         default=None,
         help="node from nodes.ini to contact; defaults to the first node",
@@ -148,7 +154,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    cfg = read_config()
+    cfg = read_config(args.config.expanduser().resolve())
     nodes = read_nodes(project_path(cfg["paths"].get("nodes_file")))
     node = select_node(nodes, args.node_name)
 

@@ -39,7 +39,6 @@ pub(super) async fn create_store(
         PutCleanupResource::LocalDir(resource_dir.to_path_buf()),
         PutCleanupResource::S3Bucket {
             bucket: bucket.clone(),
-            config: config.clone(),
         },
     ];
     let store =

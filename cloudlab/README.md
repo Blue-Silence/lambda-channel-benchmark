@@ -28,6 +28,7 @@ cloudlab/
 │   │   ├── start_expr_servers.py
 │   │   ├── kill_expr_servers.py
 │   │   ├── run_proxy_experiment.py
+│   │   ├── gc_aws_resources.py
 │   │   └── record_single.py
 │   ├── lib/
 │   │   └── nodes.py
@@ -147,6 +148,35 @@ Run one proxy-submitted experiment locally against the first CloudLab node in
 python cloudlab/scripts/entrypoints/run_proxy_experiment.py \
   --experiment config/experiments/blob/put.toml
 ```
+
+For AWS-backed runs, keep resource cleanup out of the measured datapath. Use the
+local GC helper before and after proxy-submitted experiments. It is prefix
+scoped, defaults to dry-run, and reads AWS environment from `[runtime]
+aws_env_file` when available:
+
+```bash
+# preflight: delete only already-empty resources left by earlier runs
+python cloudlab/scripts/entrypoints/gc_aws_resources.py \
+  --bucket-prefix lcbench-blob-put \
+  --table-prefix lcbench_blob_put_meta \
+  --table-prefix lcbench_blob_put_holders \
+  --table-prefix lcbench-metadata- \
+  --s3-mode empty-only \
+  --yes
+
+# finalizer: use AWS CLI cleanup for prefixed resources after the run
+python cloudlab/scripts/entrypoints/gc_aws_resources.py \
+  --bucket-prefix lcbench-blob-put \
+  --table-prefix lcbench_blob_put_meta \
+  --table-prefix lcbench_blob_put_holders \
+  --table-prefix lcbench-metadata- \
+  --s3-mode force \
+  --workers 16 \
+  --yes
+```
+
+The single-node blob put workflow runs those GC steps automatically in
+`05_run_all_puts.sh`; set `LC_BENCH_SKIP_AWS_GC=1` to skip them.
 
 For a one-node CloudLab run, set `[runtime] remote_instances_file` in
 `cloudlab/.config/cloudlab.ini` to:

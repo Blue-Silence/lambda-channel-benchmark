@@ -205,7 +205,7 @@ def write_manifest(
     log(f"wrote workspace manifest: {manifest_inside_workspace}")
 
 
-def should_exclude(relative_path: Path) -> bool:
+def should_exclude(relative_path: Path, *, exclude_private_dependency: bool = True) -> bool:
     excluded_names = {
         ".git",
         ".codex",
@@ -213,7 +213,6 @@ def should_exclude(relative_path: Path) -> bool:
         ".allocate.ini",
         ".cloudlab.ini",
         ".generated",
-        ".p2p-data-transfer",
         ".secrets",
         ".venv",
         "results",
@@ -225,6 +224,9 @@ def should_exclude(relative_path: Path) -> bool:
         ".DS_Store",
     }
 
+    if exclude_private_dependency:
+        excluded_names.add(".p2p-data-transfer")
+
     return any(part in excluded_names for part in relative_path.parts)
 
 
@@ -234,7 +236,7 @@ def add_tree_to_tar(tar: tarfile.TarFile, source_dir: Path) -> None:
     for path in sorted(source_dir.rglob("*")):
         relative = path.relative_to(source_dir)
 
-        if should_exclude(relative):
+        if should_exclude(relative, exclude_private_dependency=False):
             continue
 
         arcname = Path(PACKAGE_ROOT_NAME) / relative
