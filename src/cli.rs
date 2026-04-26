@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::config::ConfigPaths;
-use crate::roles::{BlobGetOptions, NodeOptions, ProxyOptions, TriggerOptions};
+use crate::roles::{BlobGetOptions, HealthOptions, NodeOptions, ProxyOptions, TriggerOptions};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BenchCommand {
@@ -17,6 +17,7 @@ pub enum InvocationCommand {
     Node(NodeOptions),
     Trigger(TriggerOptions),
     Proxy(ProxyOptions),
+    Health(HealthOptions),
     BlobGet(BlobGetOptions),
     Help,
 }
@@ -180,6 +181,30 @@ impl Invocation {
                     rpc_addr,
                     csv_output,
                 }),
+                bench_config: config,
+                config_paths,
+            });
+        }
+
+        if command_arg == "health" {
+            let mut rpc_addr = None;
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--url" | "--rpc-addr" => rpc_addr = Some(required_value(&mut args, "--url")?),
+                    "-h" | "--help" => {
+                        return Ok(Self {
+                            command: InvocationCommand::Help,
+                            bench_config: config,
+                            config_paths,
+                        });
+                    }
+                    other => return Err(format!("unknown health option: {other}")),
+                }
+            }
+            let rpc_addr =
+                rpc_addr.ok_or_else(|| "health requires --url <rpc-addr>".to_string())?;
+            return Ok(Self {
+                command: InvocationCommand::Health(HealthOptions { rpc_addr }),
                 bench_config: config,
                 config_paths,
             });
@@ -379,6 +404,7 @@ pub fn usage() -> &'static str {
   lc-bench node [--instance-id <id>] [--instances <path>]
   lc-bench trigger [--coordinator <id>] [--experiment <path>] [--instances <path>]
   lc-bench proxy --url <rpc-addr> [--experiment <path>] [--csv <path>]
+  lc-bench health --url <rpc-addr>
   lc-bench blob-get --coordinator <id> --peer <id> [--backend <name>] [--count <n>] [--object-size <size>]
 
 Options:

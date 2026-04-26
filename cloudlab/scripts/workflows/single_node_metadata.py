@@ -20,7 +20,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 ENTRYPOINT_DIR = ROOT / "cloudlab" / "scripts" / "entrypoints"
+LIB_DIR = ROOT / "cloudlab" / "scripts" / "lib"
 sys.path.insert(0, str(ENTRYPOINT_DIR))
+sys.path.insert(0, str(LIB_DIR))
 
 import allocate_profile
 import check_experiment_ready
@@ -31,6 +33,7 @@ import package as package_entrypoint
 import record_single
 import run_proxy_experiment
 import start_expr_servers
+from nodes import read_nodes
 
 METADATA_EXPERIMENTS = [
     "config/experiments/metadata/append.toml",
@@ -92,6 +95,28 @@ def gc_command(args: argparse.Namespace, mode: str) -> list[str]:
     return command
 
 
+def default_rpc_url(args: argparse.Namespace) -> str:
+    if args.rpc_url:
+        return args.rpc_url
+    cfg = configparser.ConfigParser()
+    cfg.read(args.cloudlab_config)
+    nodes = read_nodes(local_path(cfg["paths"].get("nodes_file")))
+    return f"{nodes[0].host}:19000"
+
+
+def check_node_rpc_health(args: argparse.Namespace) -> None:
+    rpc_url = default_rpc_url(args)
+    log(f"check node RPC health: {rpc_url}")
+    run([args.lc_bench, "health", "--url", rpc_url])
+
+
+def settle_after_experiment(args: argparse.Namespace) -> None:
+    if args.settle_sec <= 0:
+        return
+    log(f"settle after experiment: sleep {args.settle_sec:.1f}s")
+    time.sleep(args.settle_sec)
+
+
 def run_proxy_command(args: argparse.Namespace, experiment: str) -> list[str]:
     command = [
         "--config",
@@ -132,6 +157,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--aws-gc-workers",
         type=int,
         default=int(os.environ.get("AWS_GC_WORKERS", "16")),
+    )
+    parser.add_argument(
+        "--settle-sec",
+        type=float,
+        default=float(os.environ.get("METADATA_SETTLE_SEC", "3")),
+        help="seconds to wait after each proxy experiment",
     )
     parser.add_argument(
         "--skip-allocate",
@@ -241,7 +272,7 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
         ready_args.append("--skip-portal")
 
     log("wait for CloudLab node readiness")
-    ready_result = check_experiment_ready.main(ready_args)
+    ready_result = check_experiment_ready.main(ready_args + ["--poll-sec", "300"])
     if not ready_result.ready:
         raise RuntimeError(
             f"CloudLab node is not ready after {ready_result.attempts} readiness attempt(s)"
@@ -281,11 +312,13 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
 
         # 5. Run each metadata experiment from the local proxy.
         for experiment in args.experiments:
+            check_node_rpc_health(args)
             log(f"run proxy experiment: {experiment}")
             proxy_result = run_proxy_experiment.main(run_proxy_command(args, experiment))
             proxy_results.append(proxy_result)
             log(f"csv output: {proxy_result.csv_output}")
             log(f"log output: {proxy_result.log_output}")
+            settle_after_experiment(args)
             if proxy_result.return_code != 0:
                 raise RuntimeError(
                     f"proxy experiment failed with exit code {proxy_result.return_code}: "

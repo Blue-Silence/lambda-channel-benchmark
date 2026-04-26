@@ -7,8 +7,8 @@ use tokio::time::sleep;
 use crate::config::{experiment_summary, instances_summary, ExperimentSpec, InstancesConfig};
 use crate::output;
 use crate::rpc::protocol::{
-    AcceptedResponse, ExperimentRunResult, NodeRpcClient, PollRequestRequest, RequestResult,
-    RequestStatus,
+    AcceptedResponse, ExperimentRunResult, HealthRequest, NodeRpcClient, PollRequestRequest,
+    RequestResult, RequestStatus,
 };
 use crate::rpc::{
     connect_node, connect_node_addr, serve_node, RunBlobGetRequest, RunExperimentRequest,
@@ -28,6 +28,11 @@ pub struct TriggerOptions {
 pub struct ProxyOptions {
     pub rpc_addr: String,
     pub csv_output: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+pub struct HealthOptions {
+    pub rpc_addr: String,
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +115,29 @@ pub async fn run_proxy(experiment: ExperimentSpec, options: ProxyOptions) -> Res
     Ok(())
 }
 
+pub async fn run_health(options: HealthOptions) -> Result<(), String> {
+    let client = connect_node_addr(&options.rpc_addr).await?;
+    let response = client
+        .health(rpc_context(Duration::from_secs(5)), HealthRequest {})
+        .await
+        .map_err(|err| format!("health RPC failed for {}: {err}", options.rpc_addr))?;
+
+    println!(
+        "health ok={} instance_id={} status={} current_run_id={} generation={}",
+        response.ok,
+        response.instance_id,
+        response.node_status,
+        response.current_run_id.as_deref().unwrap_or("-"),
+        response.generation,
+    );
+
+    if response.ok {
+        Ok(())
+    } else {
+        Err(format!("node {} reported unhealthy", options.rpc_addr))
+    }
+}
+
 pub async fn run_blob_get(
     instances: InstancesConfig,
     options: BlobGetOptions,
@@ -181,11 +209,22 @@ async fn submit_experiment_and_wait(
     target_label: &str,
     print_result_message: bool,
 ) -> Result<ExperimentRunResult, String> {
+    let rpc_timeout = Duration::from_millis(experiment.coordination.rpc_timeout_ms);
     let accepted = client
-        .submit_experiment(context::current(), RunExperimentRequest { experiment })
+        .submit_experiment(
+            rpc_context(rpc_timeout),
+            RunExperimentRequest { experiment },
+        )
         .await
         .map_err(|err| format!("submit_experiment RPC failed for {target_label}: {err}"))?;
-    wait_for_submitted_experiment(client, target_label, accepted, print_result_message).await
+    wait_for_submitted_experiment(
+        client,
+        target_label,
+        accepted,
+        print_result_message,
+        rpc_timeout,
+    )
+    .await
 }
 
 async fn wait_for_submitted_experiment(
@@ -193,6 +232,7 @@ async fn wait_for_submitted_experiment(
     target_label: &str,
     accepted: AcceptedResponse,
     print_result_message: bool,
+    rpc_timeout: Duration,
 ) -> Result<ExperimentRunResult, String> {
     if !accepted.ok {
         return Err(format!(
@@ -212,7 +252,7 @@ async fn wait_for_submitted_experiment(
     loop {
         let response = client
             .poll_request(
-                context::current(),
+                rpc_context(rpc_timeout),
                 PollRequestRequest {
                     run_id: accepted.run_id.clone(),
                     req_id: req_id.clone(),
@@ -278,6 +318,12 @@ async fn wait_for_submitted_experiment(
 
         sleep(Duration::from_millis(500)).await;
     }
+}
+
+fn rpc_context(timeout: Duration) -> context::Context {
+    let mut ctx = context::current();
+    ctx.deadline = Instant::now() + timeout;
+    ctx
 }
 
 fn resolve_node_instance_id(

@@ -140,6 +140,12 @@ Stop all remote expr servers:
 python cloudlab/scripts/entrypoints/kill_expr_servers.py
 ```
 
+Check the long-lived node daemon through its control-plane RPC endpoint:
+
+```bash
+target/release/lc-bench health --url <cloudlab-host>:19000
+```
+
 Run one proxy-submitted experiment locally against the first CloudLab node in
 `.generated/nodes.ini`. CSV/log output stays on the local machine under
 `cloudlab/results/`:
@@ -182,8 +188,15 @@ default it runs all blob put object-size sets:
 python cloudlab/scripts/workflows/single_node_blob_put.py
 ```
 
+Before each experiment TOML, the workflow checks node liveness with
+`lc-bench health --url ...`. After each experiment TOML, it waits briefly so the
+remote node can finish normal state cleanup before the next run. The default
+settle time is 3 seconds and can be changed with `--settle-sec`.
+
 All datapoints from one workflow run are appended to one CSV file under
-`[paths] results_dir` as the experiments finish. To choose the CSV path:
+`[paths] results_dir` as the experiments finish. Metadata and blob put are
+separate workflows, so run them with separate CSV files, typically in the same
+results subdirectory. To choose the blob put CSV path:
 
 ```bash
 python cloudlab/scripts/workflows/single_node_blob_put.py \
@@ -206,7 +219,13 @@ wrapper around the Python entrypoints. For an already allocated node, use:
 ```bash
 python cloudlab/scripts/workflows/single_node_blob_put.py \
   --skip-allocate \
-  --skip-ready-portal
+  --skip-deploy
+```
+
+The metadata workflow follows the same single-node pattern:
+
+```bash
+python cloudlab/scripts/workflows/single_node_metadata.py
 ```
 
 For a one-node CloudLab run, set `[runtime] remote_instances_file` in

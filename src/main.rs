@@ -103,6 +103,13 @@ async fn main() -> ExitCode {
                 }
             }
         }
+        InvocationCommand::Health(options) => match roles::run_health(options).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("{message}");
+                ExitCode::from(1)
+            }
+        },
         InvocationCommand::BlobGet(options) => {
             let instances = match load_instances(&invocation.config_paths.instances) {
                 Ok(instances) => instances,
