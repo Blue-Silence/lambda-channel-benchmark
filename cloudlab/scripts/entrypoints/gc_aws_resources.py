@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ class GcResult:
     table_prefixes: list[str]
     buckets: list[str]
     tables: list[str]
+    s3_max_concurrent_requests: int
     failures: int
 
 
@@ -100,6 +102,31 @@ def aws_env(args: argparse.Namespace) -> dict[str, str]:
     return env
 
 
+def write_s3_cli_config(
+    directory: Path,
+    env: dict[str, str],
+    max_concurrent_requests: int,
+    max_queue_size: int,
+) -> dict[str, str]:
+    profile = env.get("AWS_PROFILE", "default").strip() or "default"
+    section = "default" if profile == "default" else f"profile {profile}"
+    config_file = directory / "config"
+    config_file.write_text(
+        "\n".join(
+            [
+                f"[{section}]",
+                "s3 =",
+                f"    max_concurrent_requests = {max_concurrent_requests}",
+                f"    max_queue_size = {max_queue_size}",
+                "",
+            ]
+        )
+    )
+    configured = dict(env)
+    configured["AWS_CONFIG_FILE"] = str(config_file)
+    return configured
+
+
 def run_json(command: list[str], env: dict[str, str]) -> object:
     proc = subprocess.run(
         command,
@@ -152,7 +179,13 @@ def list_tables(env: dict[str, str], prefixes: list[str]) -> list[str]:
     return sorted(name for name in names if isinstance(name, str) and has_prefix(name, prefixes))
 
 
-def delete_bucket(bucket: str, mode: str, env: dict[str, str], dry_run: bool) -> tuple[str, bool, str]:
+def delete_bucket(
+    bucket: str,
+    mode: str,
+    env: dict[str, str],
+    s3_env: dict[str, str],
+    dry_run: bool,
+) -> tuple[str, bool, str]:
     if dry_run:
         return bucket, True, f"dry-run: would delete S3 bucket ({mode})"
     if mode == "empty-only":
@@ -163,8 +196,14 @@ def delete_bucket(bucket: str, mode: str, env: dict[str, str], dry_run: bool) ->
             return bucket, False, "skipped non-empty bucket"
         return bucket, False, output
     if mode == "force":
-        rc, output = run_quiet(["aws", "s3", "rb", f"s3://{bucket}", "--force"], env)
-        return bucket, rc == 0, output or "deleted bucket with --force"
+        rc, output = run_quiet(
+            ["aws", "s3", "rm", f"s3://{bucket}", "--recursive", "--quiet"],
+            s3_env,
+        )
+        if rc != 0:
+            return bucket, False, output
+        rc, output = run_quiet(["aws", "s3api", "delete-bucket", "--bucket", bucket], env)
+        return bucket, rc == 0, output or "deleted bucket after recursive rm"
     raise ValueError(f"unknown S3 cleanup mode: {mode}")
 
 
@@ -238,6 +277,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="parallel deletion workers, default: 8",
     )
     parser.add_argument(
+        "--s3-max-concurrent-requests",
+        type=int,
+        default=int(os.environ.get("AWS_S3_MAX_CONCURRENT_REQUESTS", "256")),
+        help="AWS CLI S3 transfer concurrency for force cleanup, default: 256",
+    )
+    parser.add_argument(
+        "--s3-max-queue-size",
+        type=int,
+        default=int(os.environ.get("AWS_S3_MAX_QUEUE_SIZE", "10000")),
+        help="AWS CLI S3 transfer queue size for force cleanup, default: 10000",
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="actually delete resources; without this flag the script is dry-run only",
@@ -249,6 +300,10 @@ def main(argv: list[str] | None = None) -> GcResult:
     args = parse_args(argv)
     if args.workers <= 0:
         raise ValueError("--workers must be greater than zero")
+    if args.s3_max_concurrent_requests <= 0:
+        raise ValueError("--s3-max-concurrent-requests must be greater than zero")
+    if args.s3_max_queue_size <= 0:
+        raise ValueError("--s3-max-queue-size must be greater than zero")
     if not args.bucket_prefix and not args.table_prefix:
         raise ValueError("provide at least one --bucket-prefix or --table-prefix")
 
@@ -259,25 +314,35 @@ def main(argv: list[str] | None = None) -> GcResult:
     if args.region:
         log(f"region: {args.region}")
 
-    failures = 0
-    buckets: list[str] = []
-    tables: list[str] = []
-    if args.bucket_prefix:
-        buckets = list_buckets(env, args.bucket_prefix)
-        failures += run_parallel(
-            "s3",
-            buckets,
-            args.workers,
-            lambda bucket: delete_bucket(bucket, args.s3_mode, env, dry_run),
+    with tempfile.TemporaryDirectory(prefix="lcbench-awscli-") as temp_dir:
+        s3_env = write_s3_cli_config(
+            Path(temp_dir),
+            env,
+            args.s3_max_concurrent_requests,
+            args.s3_max_queue_size,
         )
-    if args.table_prefix:
-        tables = list_tables(env, args.table_prefix)
-        failures += run_parallel(
-            "dynamodb",
-            tables,
-            args.workers,
-            lambda table: delete_table(table, env, dry_run),
-        )
+        if args.bucket_prefix and args.s3_mode == "force":
+            log(f"s3 max concurrent requests: {args.s3_max_concurrent_requests}")
+
+        failures = 0
+        buckets: list[str] = []
+        tables: list[str] = []
+        if args.bucket_prefix:
+            buckets = list_buckets(env, args.bucket_prefix)
+            failures += run_parallel(
+                "s3",
+                buckets,
+                args.workers,
+                lambda bucket: delete_bucket(bucket, args.s3_mode, env, s3_env, dry_run),
+            )
+        if args.table_prefix:
+            tables = list_tables(env, args.table_prefix)
+            failures += run_parallel(
+                "dynamodb",
+                tables,
+                args.workers,
+                lambda table: delete_table(table, env, dry_run),
+            )
     return GcResult(
         dry_run=dry_run,
         s3_mode=args.s3_mode,
@@ -285,6 +350,7 @@ def main(argv: list[str] | None = None) -> GcResult:
         table_prefixes=args.table_prefix,
         buckets=buckets,
         tables=tables,
+        s3_max_concurrent_requests=args.s3_max_concurrent_requests,
         failures=failures,
     )
 
@@ -292,6 +358,7 @@ def main(argv: list[str] | None = None) -> GcResult:
 def print_result(result: GcResult) -> None:
     log(f"dry run: {result.dry_run}")
     log(f"s3 mode: {result.s3_mode}")
+    log(f"s3 max concurrent requests: {result.s3_max_concurrent_requests}")
     log(f"s3 buckets matched: {len(result.buckets)}")
     log(f"dynamodb tables matched: {len(result.tables)}")
     log(f"failures: {result.failures}")

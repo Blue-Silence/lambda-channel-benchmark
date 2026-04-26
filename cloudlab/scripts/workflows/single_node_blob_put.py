@@ -115,6 +115,8 @@ def gc_command(args: argparse.Namespace, mode: str) -> list[str]:
         mode,
         "--workers",
         str(args.aws_gc_workers),
+        "--s3-max-concurrent-requests",
+        str(args.aws_s3_max_concurrent_requests),
         "--yes",
     ]
     for prefix in S3_BUCKET_PREFIXES:
@@ -206,6 +208,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--aws-gc-workers",
         type=int,
         default=int(os.environ.get("AWS_GC_WORKERS", "16")),
+    )
+    parser.add_argument(
+        "--aws-s3-max-concurrent-requests",
+        type=int,
+        default=int(os.environ.get("AWS_S3_MAX_CONCURRENT_REQUESTS", "256")),
+        help="AWS CLI S3 transfer concurrency used by final GC",
     )
     parser.add_argument(
         "--settle-sec",
