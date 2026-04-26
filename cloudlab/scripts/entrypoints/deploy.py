@@ -18,7 +18,7 @@ import argparse
 import configparser
 import shlex
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 ENTRYPOINT_DIR = Path(__file__).resolve().parent
@@ -28,10 +28,18 @@ ROOT = CLOUDLAB_DIR.parent
 sys.path.insert(0, str(SCRIPTS_DIR / "lib"))
 
 from nodes import Node, read_nodes
+from parallel import run_on_nodes
 from ssh import connect
 
 
 CONFIG_FILE = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
+
+
+@dataclass(frozen=True)
+class DeployResult:
+    config_path: Path
+    nodes: list[Node]
+    package_file: Path
 
 
 def log(message: str) -> None:
@@ -55,7 +63,7 @@ def read_config(path: Path) -> configparser.ConfigParser:
     return cfg
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
@@ -63,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         default=CONFIG_FILE,
         help=f"cloudlab config file, default: {CONFIG_FILE}",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def remote_build_cmd(
@@ -150,9 +158,10 @@ def deploy_node(node: Node, cfg: configparser.ConfigParser, package_file: Path) 
         conn.close()
 
 
-def main() -> None:
-    args = parse_args()
-    cfg = read_config(args.config.expanduser().resolve())
+def main(argv: list[str] | None = None) -> DeployResult:
+    args = parse_args(argv)
+    config_path = args.config.expanduser().resolve()
+    cfg = read_config(config_path)
 
     nodes_file = project_path(cfg["paths"].get("nodes_file"))
     package_file = project_path(cfg["paths"].get("package_file"))
@@ -172,31 +181,27 @@ def main() -> None:
     log(f"loaded {len(nodes)} node(s)")
     log(f"package: {package_file}")
 
-    if not parallel:
-        for node in nodes:
-            deploy_node(node, cfg, package_file)
-        return
-
-    failures: list[tuple[Node, BaseException]] = []
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(deploy_node, node, cfg, package_file): node for node in nodes}
-
-        for future in as_completed(futures):
-            node = futures[future]
-
-            try:
-                future.result()
-            except Exception as exc:
-                failures.append((node, exc))
-                log(f"{node.name}: FAILED: {exc}")
-
-    if failures:
-        names = ", ".join(node.name for node, _ in failures)
-        raise RuntimeError(f"deploy failed on: {names}")
-
+    run_on_nodes(
+        nodes=nodes,
+        action_name="deploy",
+        parallel=parallel,
+        max_workers=max_workers,
+        task=lambda node: deploy_node(node, cfg, package_file),
+        log=log,
+    )
     log("all nodes deployed successfully")
+    return DeployResult(config_path=config_path, nodes=nodes, package_file=package_file)
+
+
+def print_result(result: DeployResult) -> None:
+    log(f"deployed nodes: {len(result.nodes)}")
+    log(f"package: {result.package_file}")
+
+
+def cli(argv: list[str] | None = None) -> int:
+    print_result(main(argv))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(cli())

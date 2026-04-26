@@ -27,12 +27,3 @@ def connect(
         port=node.port,
         connect_kwargs=kwargs,
     )
-
-
-def remote_path_join(*parts: str) -> str:
-    cleaned = [part.strip("/") for part in parts if part]
-    if not cleaned:
-        return "."
-    if parts[0].startswith("/"):
-        return "/" + "/".join(cleaned)
-    return "/".join(cleaned)

@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,15 @@ from nodes import Node, write_nodes
 
 DEFAULT_CONFIG = CLOUDLAB_DIR / ".config" / "allocate.ini"
 DEFAULT_PORTAL_URL = "https://www.cloudlab.us"
+
+
+@dataclass(frozen=True)
+class RefreshNodesResult:
+    config_path: Path
+    nodes_file: Path
+    experiment: str
+    experiment_id: str
+    nodes: list[Node]
 
 
 def log(message: str) -> None:
@@ -343,7 +353,7 @@ def load_settings(
     }
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Refresh nodes.ini from an existing CloudLab experiment."
     )
@@ -360,11 +370,11 @@ def parse_args() -> argparse.Namespace:
         help="CloudLab experiment id; overrides [experiment] experiment_id/name",
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> RefreshNodesResult:
+    args = parse_args(argv)
 
     config_path = args.config.expanduser().resolve()
     cfg = read_config(config_path)
@@ -416,9 +426,27 @@ def main() -> int:
     )
 
     log(f"wrote nodes for {len(nodes)} node(s)")
+    return RefreshNodesResult(
+        config_path=config_path,
+        nodes_file=settings["nodes_file"],
+        experiment=settings["experiment"],
+        experiment_id=settings["experiment_id"],
+        nodes=nodes,
+    )
+
+
+def print_result(result: RefreshNodesResult) -> None:
+    log(f"experiment: {result.experiment}")
+    log(f"experiment id: {result.experiment_id}")
+    log(f"nodes file: {result.nodes_file}")
+    log(f"nodes: {len(result.nodes)}")
     log("next stage: python cloudlab/scripts/entrypoints/deploy.py")
+
+
+def cli(argv: list[str] | None = None) -> int:
+    print_result(main(argv))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

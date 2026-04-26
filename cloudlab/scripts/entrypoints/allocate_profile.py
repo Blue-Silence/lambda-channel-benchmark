@@ -38,6 +38,7 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,15 @@ from nodes import Node, write_nodes
 
 DEFAULT_CONFIG = CLOUDLAB_DIR / ".config" / "allocate.ini"
 DEFAULT_PORTAL_URL = "https://www.cloudlab.us"
+
+
+@dataclass(frozen=True)
+class AllocateResult:
+    config_path: Path
+    nodes_file: Path
+    experiment: str
+    experiment_id: str
+    nodes: list[Node]
 
 
 def log(message: str) -> None:
@@ -419,6 +429,42 @@ class TerminalExperimentStatus(RuntimeError):
     pass
 
 
+def log_status_fields(obj: Any) -> None:
+    fields: list[tuple[str, Any]] = []
+
+    def walk(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{path}.{key}" if path else str(key)
+                lowered = str(key).lower()
+                if lowered in {
+                    "status",
+                    "state",
+                    "phase",
+                    "ready",
+                    "reason",
+                    "message",
+                    "error",
+                    "errors",
+                    "failure_reason",
+                    "details",
+                }:
+                    fields.append((child_path, child))
+                walk(child, child_path)
+        elif isinstance(value, list):
+            for idx, child in enumerate(value):
+                walk(child, f"{path}[{idx}]")
+
+    walk(obj, "")
+    if not fields:
+        log("portal returned no reason/error/message fields")
+        return
+
+    log("portal status-like fields:")
+    for key, value in fields[:30]:
+        log(f"  {key} = {value!r}")
+
+
 def experiment_status(exp: Any) -> str:
     if isinstance(exp, dict):
         value = exp.get("status") or exp.get("state")
@@ -454,6 +500,11 @@ def wait_for_nodes(
             if status:
                 log(f"experiment status: {status}")
             if status in TERMINAL_FAILURE_STATUSES:
+                log_status_fields(exp)
+                log(
+                    "leaving failed CloudLab experiment for debugging; "
+                    "terminate it manually after inspecting Portal"
+                )
                 raise TerminalExperimentStatus(
                     f"CloudLab experiment {experiment_id} entered terminal status: {status}"
                 )
@@ -550,7 +601,7 @@ def load_allocate_settings(cfg: configparser.ConfigParser) -> dict[str, Any]:
     }
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Instantiate an existing CloudLab profile and write nodes.ini."
     )
@@ -562,11 +613,11 @@ def parse_args() -> argparse.Namespace:
         help=f"allocate config file, default: {DEFAULT_CONFIG}",
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> AllocateResult:
+    args = parse_args(argv)
 
     config_path = args.config.expanduser().resolve()
     cfg = read_config(config_path)
@@ -625,9 +676,27 @@ def main() -> int:
     )
 
     log(f"wrote nodes for {len(nodes)} node(s)")
+    return AllocateResult(
+        config_path=config_path,
+        nodes_file=settings["nodes_file"],
+        experiment=settings["experiment"],
+        experiment_id=experiment_id,
+        nodes=nodes,
+    )
+
+
+def print_result(result: AllocateResult) -> None:
+    log(f"experiment: {result.experiment}")
+    log(f"portal experiment id: {result.experiment_id}")
+    log(f"nodes file: {result.nodes_file}")
+    log(f"nodes: {len(result.nodes)}")
     log("next stage: python cloudlab/scripts/entrypoints/deploy.py")
+
+
+def cli(argv: list[str] | None = None) -> int:
+    print_result(main(argv))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

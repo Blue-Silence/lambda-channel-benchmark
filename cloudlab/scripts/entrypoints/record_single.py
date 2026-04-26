@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import configparser
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 ENTRYPOINT_DIR = Path(__file__).resolve().parent
@@ -29,6 +30,13 @@ from nodes import Node, write_nodes
 
 
 DEFAULT_CONFIG = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
+
+
+@dataclass(frozen=True)
+class RecordSingleResult:
+    nodes_file: Path
+    experiment: str
+    node: Node
 
 
 def log(message: str) -> None:
@@ -68,7 +76,7 @@ def parse_host_port(value: str) -> tuple[str, int]:
     return host, int(port_str)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -104,11 +112,11 @@ def parse_args() -> argparse.Namespace:
         help="node name written to nodes.ini",
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> RecordSingleResult:
+    args = parse_args(argv)
 
     cfg = read_config(args.config.expanduser().resolve())
     nodes_file = project_path(cfg.get("paths", "nodes_file"))
@@ -130,9 +138,19 @@ def main() -> int:
         nodes=[node],
     )
 
+    return RecordSingleResult(nodes_file=nodes_file, experiment=args.experiment, node=node)
+
+
+def print_result(result: RecordSingleResult) -> None:
+    node = result.node
     log(f"recorded node: {node.name} {node.user}@{node.host}:{node.port}")
+    log(f"nodes file: {result.nodes_file}")
+
+
+def cli(argv: list[str] | None = None) -> int:
+    print_result(main(argv))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

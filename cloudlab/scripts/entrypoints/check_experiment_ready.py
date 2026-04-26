@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import argparse
 import configparser
-import ipaddress
 import json
 import socket
+import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +40,6 @@ import refresh_nodes
 
 DEFAULT_CLOUDLAB_CONFIG = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
 DEFAULT_ALLOCATE_CONFIG = CLOUDLAB_DIR / ".config" / "allocate.ini"
-FAKE_IP_NET = ipaddress.ip_network("198.18.0.0/15")
 TERMINAL_FAILURE_STATUSES = {
     "canceled",
     "cancelled",
@@ -46,6 +47,14 @@ TERMINAL_FAILURE_STATUSES = {
     "terminated",
     "terminating",
 }
+
+
+@dataclass(frozen=True)
+class ReadyResult:
+    ready: bool
+    attempts: int
+    nodes_file: Path
+    nodes: list[Node]
 
 
 def log(message: str) -> None:
@@ -111,13 +120,6 @@ def resolve_host(host: str) -> list[str]:
     return sorted(addrs)
 
 
-def is_fake_ip(address: str) -> bool:
-    try:
-        return ipaddress.ip_address(address) in FAKE_IP_NET
-    except ValueError:
-        return False
-
-
 def check_ssh_banner(node: Node, timeout: float) -> tuple[bool, str]:
     try:
         with socket.create_connection((node.host, node.port), timeout=timeout) as sock:
@@ -139,6 +141,43 @@ def check_ssh_banner(node: Node, timeout: float) -> tuple[bool, str]:
     if not text:
         return False, "empty-banner"
     return False, f"non-ssh-banner: {text[:80]}"
+
+
+def check_ssh_auth(
+    *,
+    node: Node,
+    cfg: configparser.ConfigParser,
+    timeout: float,
+) -> tuple[bool, str]:
+    ssh_key = cfg.get("deploy", "ssh_key", fallback="").strip()
+    command = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        f"ConnectTimeout={max(1, int(timeout))}",
+    ]
+    if ssh_key:
+        command.extend(["-i", str(project_path(ssh_key))])
+    command.extend([f"{node.user}@{node.host}", "true"])
+
+    result = subprocess.run(
+        command,
+        cwd=str(PROJECT_ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+        timeout=max(2, timeout + 2),
+    )
+    if result.returncode == 0:
+        return True, "key-auth-ok"
+    detail = " ".join(result.stdout.strip().split())
+    return False, detail or f"ssh exited {result.returncode}"
 
 
 def check_portal(
@@ -194,7 +233,7 @@ def check_portal(
     return True
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Check whether recorded CloudLab nodes are ready for deploy."
     )
@@ -226,19 +265,45 @@ def parse_args() -> argparse.Namespace:
         default=8.0,
         help="seconds for TCP connect and SSH banner read",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--require-ssh-auth",
+        action="store_true",
+        help="also require a successful non-interactive SSH key-auth command",
+    )
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        help="poll until ready or timeout instead of checking once",
+    )
+    parser.add_argument(
+        "--timeout-sec",
+        type=float,
+        default=1800.0,
+        help="maximum seconds to wait with --wait",
+    )
+    parser.add_argument(
+        "--poll-sec",
+        type=float,
+        default=30.0,
+        help="seconds between --wait polls",
+    )
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def read_inventory(
+    args: argparse.Namespace,
+) -> tuple[configparser.ConfigParser, Path, list[Node], dict[str, str]]:
     cloudlab_config = args.config.expanduser().resolve()
-    allocate_config = args.allocate_config.expanduser().resolve()
-
     cfg = read_config(cloudlab_config)
     nodes_file = project_path(cfg.get("paths", "nodes_file"))
     nodes = read_nodes(nodes_file)
     exp_fields = read_experiment_fields(nodes_file)
+    return cfg, nodes_file, nodes, exp_fields
 
+
+def check_once(args: argparse.Namespace) -> tuple[bool, Path, list[Node]]:
+    cfg, nodes_file, nodes, exp_fields = read_inventory(args)
+    allocate_config = args.allocate_config.expanduser().resolve()
     experiment_id = (
         args.experiment_id
         or exp_fields.get("portal_experiment_id")
@@ -274,13 +339,6 @@ def main() -> int:
             continue
 
         log(f"  dns: {', '.join(addresses)}")
-        fake_addresses = [addr for addr in addresses if is_fake_ip(addr)]
-        if fake_addresses:
-            all_ready = False
-            log(
-                "  dns: WARNING fake-ip address detected; configure proxy/DNS DIRECT "
-                f"for CloudLab ({', '.join(fake_addresses)})"
-            )
 
         ok, detail = check_ssh_banner(node, args.ssh_timeout)
         if ok:
@@ -288,14 +346,64 @@ def main() -> int:
         else:
             all_ready = False
             log(f"  ssh: NOT READY ({detail})")
+            continue
+
+        if args.require_ssh_auth:
+            ok, detail = check_ssh_auth(node=node, cfg=cfg, timeout=args.ssh_timeout)
+            if ok:
+                log(f"  ssh-auth: READY ({detail})")
+            else:
+                all_ready = False
+                log(f"  ssh-auth: NOT READY ({detail})")
 
     if all_ready:
-        log("ready: all recorded nodes returned SSH banners")
-        return 0
+        if args.require_ssh_auth:
+            log("ready: all recorded nodes returned SSH banners and accepted key auth")
+        else:
+            log("ready: all recorded nodes returned SSH banners")
+        return True, nodes_file, nodes
 
     log("not ready: fix Portal/node/SSH readiness before deploy")
-    return 1
+    return False, nodes_file, nodes
+
+
+def main(argv: list[str] | None = None) -> ReadyResult:
+    args = parse_args(argv)
+
+    if not args.wait:
+        ready, nodes_file, nodes = check_once(args)
+        return ReadyResult(ready=ready, attempts=1, nodes_file=nodes_file, nodes=nodes)
+
+    deadline = time.monotonic() + args.timeout_sec
+    attempt = 0
+    while True:
+        attempt += 1
+        log(f"wait attempt {attempt}")
+        ready, nodes_file, nodes = check_once(args)
+        if ready:
+            return ReadyResult(ready=True, attempts=attempt, nodes_file=nodes_file, nodes=nodes)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log(f"wait timed out after {args.timeout_sec:.1f}s")
+            return ReadyResult(ready=False, attempts=attempt, nodes_file=nodes_file, nodes=nodes)
+        sleep_for = min(args.poll_sec, remaining)
+        log(f"sleeping {sleep_for:.1f}s before next readiness check")
+        time.sleep(sleep_for)
+
+
+def print_result(result: ReadyResult) -> None:
+    status = "ready" if result.ready else "not ready"
+    log(f"result: {status}")
+    log(f"attempts: {result.attempts}")
+    log(f"nodes file: {result.nodes_file}")
+    log(f"nodes: {len(result.nodes)}")
+
+
+def cli(argv: list[str] | None = None) -> int:
+    result = main(argv)
+    print_result(result)
+    return 0 if result.ready else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

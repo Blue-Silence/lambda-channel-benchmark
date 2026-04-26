@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -25,6 +26,17 @@ CLOUDLAB_DIR = SCRIPTS_DIR.parent
 ROOT = CLOUDLAB_DIR.parent
 
 CONFIG_FILE = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
+
+
+@dataclass(frozen=True)
+class GcResult:
+    dry_run: bool
+    s3_mode: str
+    bucket_prefixes: list[str]
+    table_prefixes: list[str]
+    buckets: list[str]
+    tables: list[str]
+    failures: int
 
 
 def log(message: str) -> None:
@@ -186,7 +198,7 @@ def run_parallel(
     return failures
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
@@ -230,11 +242,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="actually delete resources; without this flag the script is dry-run only",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> GcResult:
+    args = parse_args(argv)
     if args.workers <= 0:
         raise ValueError("--workers must be greater than zero")
     if not args.bucket_prefix and not args.table_prefix:
@@ -248,6 +260,8 @@ def main() -> int:
         log(f"region: {args.region}")
 
     failures = 0
+    buckets: list[str] = []
+    tables: list[str] = []
     if args.bucket_prefix:
         buckets = list_buckets(env, args.bucket_prefix)
         failures += run_parallel(
@@ -264,8 +278,30 @@ def main() -> int:
             args.workers,
             lambda table: delete_table(table, env, dry_run),
         )
-    return 1 if failures else 0
+    return GcResult(
+        dry_run=dry_run,
+        s3_mode=args.s3_mode,
+        bucket_prefixes=args.bucket_prefix,
+        table_prefixes=args.table_prefix,
+        buckets=buckets,
+        tables=tables,
+        failures=failures,
+    )
+
+
+def print_result(result: GcResult) -> None:
+    log(f"dry run: {result.dry_run}")
+    log(f"s3 mode: {result.s3_mode}")
+    log(f"s3 buckets matched: {len(result.buckets)}")
+    log(f"dynamodb tables matched: {len(result.tables)}")
+    log(f"failures: {result.failures}")
+
+
+def cli(argv: list[str] | None = None) -> int:
+    result = main(argv)
+    print_result(result)
+    return 1 if result.failures else 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

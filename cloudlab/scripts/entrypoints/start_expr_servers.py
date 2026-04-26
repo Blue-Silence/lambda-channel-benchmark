@@ -13,7 +13,7 @@ import argparse
 import configparser
 import shlex
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 ENTRYPOINT_DIR = Path(__file__).resolve().parent
@@ -23,10 +23,17 @@ ROOT = CLOUDLAB_DIR.parent
 sys.path.insert(0, str(SCRIPTS_DIR / "lib"))
 
 from nodes import Node, read_nodes
+from parallel import run_on_nodes
 from ssh import connect
 
 
 CONFIG_FILE = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
+
+
+@dataclass(frozen=True)
+class StartResult:
+    config_path: Path
+    nodes: list[Node]
 
 
 def log(message: str) -> None:
@@ -51,7 +58,7 @@ def read_config(path: Path) -> configparser.ConfigParser:
     return cfg
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
@@ -59,7 +66,7 @@ def parse_args() -> argparse.Namespace:
         default=CONFIG_FILE,
         help=f"cloudlab config file, default: {CONFIG_FILE}",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -198,9 +205,10 @@ def start_node(node: Node, cfg: configparser.ConfigParser) -> None:
         conn.close()
 
 
-def main() -> None:
-    args = parse_args()
-    cfg = read_config(args.config.expanduser().resolve())
+def main(argv: list[str] | None = None) -> StartResult:
+    args = parse_args(argv)
+    config_path = args.config.expanduser().resolve()
+    cfg = read_config(config_path)
 
     nodes_file = project_path(cfg["paths"].get("nodes_file"))
     nodes = read_nodes(nodes_file)
@@ -214,31 +222,26 @@ def main() -> None:
     if not cfg.has_section("runtime"):
         raise ValueError("cloudlab.ini missing [runtime] section")
 
-    if not parallel:
-        for node in nodes:
-            start_node(node, cfg)
-        return
-
-    failures: list[tuple[Node, BaseException]] = []
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(start_node, node, cfg): node for node in nodes}
-
-        for future in as_completed(futures):
-            node = futures[future]
-
-            try:
-                future.result()
-            except Exception as exc:
-                failures.append((node, exc))
-                log(f"{node.name}: FAILED: {exc}")
-
-    if failures:
-        names = ", ".join(node.name for node, _ in failures)
-        raise RuntimeError(f"start failed on: {names}")
-
+    run_on_nodes(
+        nodes=nodes,
+        action_name="start",
+        parallel=parallel,
+        max_workers=max_workers,
+        task=lambda node: start_node(node, cfg),
+        log=log,
+    )
     log("all expr servers started successfully")
+    return StartResult(config_path=config_path, nodes=nodes)
+
+
+def print_result(result: StartResult) -> None:
+    log(f"started nodes: {len(result.nodes)}")
+
+
+def cli(argv: list[str] | None = None) -> int:
+    print_result(main(argv))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(cli())

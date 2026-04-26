@@ -175,8 +175,21 @@ python cloudlab/scripts/entrypoints/gc_aws_resources.py \
   --yes
 ```
 
-The single-node blob put workflow runs those GC steps automatically in
-`05_run_all_puts.sh`; set `LC_BENCH_SKIP_AWS_GC=1` to skip them.
+The single-node blob put workflow runs those GC steps automatically:
+
+```bash
+python cloudlab/scripts/workflows/single_node_blob_put.py
+```
+
+Set `LC_BENCH_SKIP_AWS_GC=1` or pass `--skip-aws-gc` to skip cleanup for a
+debugging run. The workflow script is intentionally a simple step-by-step
+wrapper around the Python entrypoints. For an already allocated node, use:
+
+```bash
+python cloudlab/scripts/workflows/single_node_blob_put.py \
+  --skip-allocate \
+  --skip-ready-portal
+```
 
 For a one-node CloudLab run, set `[runtime] remote_instances_file` in
 `cloudlab/.config/cloudlab.ini` to:

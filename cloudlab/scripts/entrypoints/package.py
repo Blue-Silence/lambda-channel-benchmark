@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import tarfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -45,6 +46,18 @@ PROJECT_ROOT = CLOUDLAB_DIR.parent
 DEFAULT_CONFIG = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
 
 PACKAGE_ROOT_NAME = "workspace"
+
+
+@dataclass(frozen=True)
+class PackageResult:
+    config_path: Path
+    work_dir: Path
+    workspace_dir: Path
+    package_file: Path
+    package_manifest: Path
+    benchmark_commit: str
+    p2p_commit: str
+    size_bytes: int
 
 
 def log(message: str) -> None:
@@ -261,7 +274,7 @@ def create_tarball(source_dir: Path, output_path: Path) -> None:
     log(f"package created: {output_path} ({size_mb:.2f} MiB)")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
@@ -269,11 +282,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_CONFIG,
         help=f"config file, default: {DEFAULT_CONFIG}",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> PackageResult:
+    args = parse_args(argv)
     config_path = args.config.expanduser().resolve()
     cfg = read_config(config_path)
 
@@ -338,9 +351,29 @@ def main() -> int:
 
     create_tarball(workspace_dir, package_file)
 
+    return PackageResult(
+        config_path=config_path,
+        work_dir=work_dir,
+        workspace_dir=workspace_dir,
+        package_file=package_file,
+        package_manifest=package_manifest,
+        benchmark_commit=benchmark_commit,
+        p2p_commit=p2p_commit,
+        size_bytes=package_file.stat().st_size,
+    )
+
+
+def print_result(result: PackageResult) -> None:
+    log(f"package file: {result.package_file}")
+    log(f"manifest: {result.package_manifest}")
+    log(f"size: {result.size_bytes / 1024 / 1024:.2f} MiB")
     log("done")
+
+
+def cli(argv: list[str] | None = None) -> int:
+    print_result(main(argv))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

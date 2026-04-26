@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 ENTRYPOINT_DIR = Path(__file__).resolve().parent
@@ -28,6 +29,17 @@ from nodes import Node, read_nodes
 
 CONFIG_FILE = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
 DEFAULT_EXPERIMENT = "config/experiments/blob/put.toml"
+
+
+@dataclass(frozen=True)
+class ProxyResult:
+    node: Node
+    binary: Path
+    rpc_url: str
+    experiment: Path
+    csv_output: Path
+    log_output: Path
+    return_code: int
 
 
 def log(message: str) -> None:
@@ -107,7 +119,7 @@ def run_proxy(
         return proc.wait()
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
@@ -149,11 +161,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="local proxy log output; defaults under [paths] results_dir",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> ProxyResult:
+    args = parse_args(argv)
     cfg = read_config(args.config.expanduser().resolve())
     nodes = read_nodes(project_path(cfg["paths"].get("nodes_file")))
     node = select_node(nodes, args.node_name)
@@ -192,10 +204,31 @@ def main() -> int:
         csv_output=csv_output,
         log_output=log_output,
     )
-    if rc == 0:
+    return ProxyResult(
+        node=node,
+        binary=binary,
+        rpc_url=rpc_url,
+        experiment=experiment,
+        csv_output=csv_output,
+        log_output=log_output,
+        return_code=rc,
+    )
+
+
+def print_result(result: ProxyResult) -> None:
+    if result.return_code == 0:
         log("proxy experiment finished successfully")
-    return rc
+    else:
+        log(f"proxy experiment failed with exit code {result.return_code}")
+    log(f"csv output: {result.csv_output}")
+    log(f"log output: {result.log_output}")
+
+
+def cli(argv: list[str] | None = None) -> int:
+    result = main(argv)
+    print_result(result)
+    return result.return_code
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())
