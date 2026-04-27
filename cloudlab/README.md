@@ -152,7 +152,7 @@ Run one proxy-submitted experiment locally against the first CloudLab node in
 
 ```bash
 python cloudlab/scripts/entrypoints/run_proxy_experiment.py \
-  --experiment config/experiments/blob/put.toml
+  --experiment config/experiments/blob/put/32b/local-file.toml
 ```
 
 For AWS-backed runs, keep resource cleanup out of the measured datapath. Use the
@@ -247,7 +247,7 @@ By default, the helper connects to the selected node's public hostname on port
 ```bash
 target/release/lc-bench proxy \
   --url <cloudlab-node-host>:19000 \
-  --experiment config/experiments/blob/put.toml \
+  --experiment config/experiments/blob/put/32b/local-file.toml \
   --csv cloudlab/results/put/blob-put.csv
 ```
 
@@ -261,7 +261,7 @@ ssh -L 19000:node-0:19000 <user>@<cloudlab-node-host>
 ```bash
 python cloudlab/scripts/entrypoints/run_proxy_experiment.py \
   --rpc-url 127.0.0.1:19000 \
-  --experiment config/experiments/blob/put.toml
+  --experiment config/experiments/blob/put/32b/local-file.toml
 ```
 
 The expected remote binary is:

@@ -13,15 +13,22 @@ pub async fn serve_node(
     instances: InstancesConfig,
     instance: InstanceConfig,
 ) -> Result<(), String> {
-    let addr = parse_rpc_addr(&instance.rpc_addr)?;
+    let listen_addr = instance
+        .rpc_listen_addr
+        .as_deref()
+        .unwrap_or(&instance.rpc_addr);
+    let addr = parse_rpc_addr(listen_addr)?;
     let summary = instances_summary(&instances);
     let service = NodeRpcService::new(instances, instance.clone());
     let mut listener = tarpc::serde_transport::tcp::listen(addr, Json::default)
         .await
-        .map_err(|err| format!("failed to listen on {}: {err}", instance.rpc_addr))?;
+        .map_err(|err| format!("failed to listen on {listen_addr}: {err}"))?;
     listener.config_mut().max_frame_length(usize::MAX);
 
-    println!("node RPC listening on {} ({})", instance.rpc_addr, summary);
+    println!(
+        "node RPC listening on {} advertise_rpc_addr={} ({})",
+        listen_addr, instance.rpc_addr, summary
+    );
     while let Some(next_transport) = listener.next().await {
         let transport = match next_transport {
             Ok(transport) => transport,

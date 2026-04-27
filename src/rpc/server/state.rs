@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lambda_channel::blob_store_impl::BlobStoreHandle;
+use lambda_channel::blob_store_impl::{BlobRefHandle, BlobStoreHandle};
 use lambda_channel::metadata_blob_channel::receiver::{AsyncMetadataBlobRecv, ConsumeMode};
 use lambda_channel::metadata_blob_channel::sender::AsyncMetadataBlobSender;
 use lambda_channel::metadata_store_impl::in_memory::AsyncInMemoryMetadataStore;
@@ -52,8 +52,27 @@ pub(crate) struct ExprState {
     pub(crate) metadata_store: Option<MetadataStoreResource>,
     pub(crate) sender: Option<SenderResource>,
     pub(crate) receiver: Option<ReceiverResource>,
+    pub(crate) paced_get_staging: BTreeMap<String, StagedPacedBlobGet>,
+    pub(crate) paced_get_plans: BTreeMap<String, PreparedPacedBlobGet>,
     pub(crate) artifacts: BTreeMap<String, Artifact>,
     pub(crate) metrics: Vec<MetricRecord>,
+}
+
+#[derive(Clone)]
+pub(crate) struct StagedPacedBlobGet {
+    pub(crate) expected_ref_count: usize,
+    pub(crate) target_ops_per_s: f64,
+    pub(crate) max_in_flight: usize,
+    pub(crate) refs: Vec<serde_json::Value>,
+    pub(crate) next_chunk_index: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedPacedBlobGet {
+    pub(crate) target_ops_per_s: f64,
+    pub(crate) max_in_flight: usize,
+    pub(crate) refs: Vec<BlobRefHandle>,
+    pub(crate) materialized_dir: PathBuf,
 }
 
 #[derive(Clone)]
@@ -168,6 +187,8 @@ pub(crate) async fn begin_expr_on_node(
         metadata_store: None,
         sender: None,
         receiver: None,
+        paced_get_staging: BTreeMap::new(),
+        paced_get_plans: BTreeMap::new(),
         artifacts: BTreeMap::new(),
         metrics: Vec::new(),
     });

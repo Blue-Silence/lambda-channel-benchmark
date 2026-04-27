@@ -160,6 +160,8 @@ const EXPERIMENT_CSV_HEADER: &[&str] = &[
     "refs_distribution",
     "getter_reuse_policy",
     "cross_getter_reuse",
+    "refs_chunk_size",
+    "refs_chunk_count",
     "preload_put_ms",
     "preload_put_ops_per_s",
 ];
@@ -212,7 +214,7 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
             .get("counters")
             .unwrap_or(&serde_json::Value::Null);
         rows.push(vec![
-            "lambda-channel-benchmark/datapoint-v3".to_string(),
+            "lambda-channel-benchmark/datapoint-v4".to_string(),
             cell(report.get("run_id")),
             cell(report.get("workload")),
             cell(report.get("backend")),
@@ -305,6 +307,8 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
             cell(datapoint.get("refs_distribution")),
             cell(datapoint.get("getter_reuse_policy")),
             cell(datapoint.get("cross_getter_reuse")),
+            cell(datapoint.get("refs_chunk_size")),
+            cell(datapoint.get("refs_chunk_count")),
             cell(datapoint.get("preload_put_ms")),
             cell(datapoint.get("preload_put_ops_per_s")),
         ]);
@@ -329,7 +333,7 @@ fn csv_needs_header_or_validate(path: &Path) -> Result<bool, String> {
                 Ok(false)
             } else {
                 Err(format!(
-                    "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v3 schema",
+                    "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v4 schema",
                     path.display()
                 ))
             }
@@ -470,7 +474,7 @@ mod tests {
         assert_eq!(rows[0].len(), EXPERIMENT_CSV_HEADER.len());
         assert_eq!(
             cell(&rows[0], "schema"),
-            "lambda-channel-benchmark/datapoint-v3"
+            "lambda-channel-benchmark/datapoint-v4"
         );
         assert_eq!(cell(&rows[0], "workload"), "metadata.append");
         assert_eq!(cell(&rows[0], "operation"), "put_elem");

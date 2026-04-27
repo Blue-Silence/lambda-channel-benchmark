@@ -439,7 +439,7 @@ Examples:
   cargo run -- blob --backend local-file --object-size 64MiB --operations 1000
   cargo run -- node
   LC_BENCH_INSTANCE_ID=local-a cargo run -- node
-  cargo run -- proxy --url 127.0.0.1:19000 --experiment config/experiments/blob/get-materialize.toml
+  cargo run -- proxy --url 127.0.0.1:19000 --experiment config/experiments/blob/microbench/get-materialize.toml
   cargo run -- trigger --coordinator local-a
   cargo run -- blob-get --coordinator local-a --peer local-b --backend local-file --count 1000 --object-size 64KiB
 "

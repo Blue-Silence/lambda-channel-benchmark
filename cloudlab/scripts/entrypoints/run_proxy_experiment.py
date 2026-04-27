@@ -28,7 +28,7 @@ from nodes import Node, read_nodes
 
 
 CONFIG_FILE = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
-DEFAULT_EXPERIMENT = "config/experiments/blob/put.toml"
+DEFAULT_EXPERIMENT = "config/experiments/blob/put/32b/local-file.toml"
 
 
 @dataclass(frozen=True)

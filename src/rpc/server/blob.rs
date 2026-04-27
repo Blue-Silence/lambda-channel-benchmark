@@ -13,11 +13,14 @@ use crate::driver::paced::{boxed_task, run_paced_tasks, PacedTask, PacedTaskRunC
 use crate::payload_file::{create_timestamped_payload_file, PayloadFileSpec};
 use crate::rpc::protocol::{
     AcceptedResponse, BlobGetResult, BlobPutResult, GetBlobBatchRequest, InitBlobStoreRequest,
-    PacedBlobGetRequest, PacedBlobGetResult, PutBlobBatchRequest, RequestResult,
+    PacedBlobGetRequest, PacedBlobGetResult, PrepareBlobGetAppendRequest,
+    PrepareBlobGetBeginRequest, PrepareBlobGetFinishRequest, PutBlobBatchRequest, RequestResult,
+    StartPreparedBlobGetRequest,
 };
 use crate::rpc::server::state::{
     create_request_on_node, current_expr, current_expr_mut, fail_request_on_node,
     finish_request_on_node, put_artifact, put_metric, BlobStoreResource, NodeRuntimeState,
+    PreparedPacedBlobGet, StagedPacedBlobGet,
 };
 
 pub(crate) async fn init_blob_store_on_node(
@@ -180,6 +183,171 @@ pub(crate) async fn submit_paced_blob_get_on_node(
             Err(message) => {
                 if let Err(err) = fail_request_on_node(&runtime, &run_id, &req_id, message).await {
                     eprintln!("failed to fail paced blob get request {req_id}: {err}");
+                }
+            }
+        }
+    });
+
+    accepted
+}
+
+pub(crate) async fn prepare_blob_get_begin_on_node(
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    request: PrepareBlobGetBeginRequest,
+) -> Result<(), String> {
+    if request.plan_id.trim().is_empty() {
+        return Err("plan_id must not be empty".to_string());
+    }
+    if request.expected_ref_count == 0 {
+        return Err("expected_ref_count must be greater than zero".to_string());
+    }
+    if !request.target_ops_per_s.is_finite() || request.target_ops_per_s <= 0.0 {
+        return Err("target_ops_per_s must be a finite positive number".to_string());
+    }
+    if request.max_in_flight == 0 {
+        return Err("max_in_flight must be greater than zero".to_string());
+    }
+
+    let mut runtime = runtime.lock().await;
+    let current = current_expr_mut(&mut runtime, &request.run_id)?;
+    current.paced_get_staging.insert(
+        request.plan_id,
+        StagedPacedBlobGet {
+            expected_ref_count: request.expected_ref_count,
+            target_ops_per_s: request.target_ops_per_s,
+            max_in_flight: request.max_in_flight,
+            refs: Vec::with_capacity(request.expected_ref_count),
+            next_chunk_index: 0,
+        },
+    );
+    current.phase = "blob_paced_get_staging".to_string();
+    runtime.generation += 1;
+    Ok(())
+}
+
+pub(crate) async fn prepare_blob_get_append_on_node(
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    request: PrepareBlobGetAppendRequest,
+) -> Result<(), String> {
+    if request.refs.is_empty() {
+        return Err("refs chunk must not be empty".to_string());
+    }
+
+    let mut runtime = runtime.lock().await;
+    let current = current_expr_mut(&mut runtime, &request.run_id)?;
+    let plan = current
+        .paced_get_staging
+        .get_mut(&request.plan_id)
+        .ok_or_else(|| format!("unknown paced get staging plan_id={}", request.plan_id))?;
+    if request.chunk_index != plan.next_chunk_index {
+        return Err(format!(
+            "unexpected refs chunk_index={} for plan_id={}, expected {}",
+            request.chunk_index, request.plan_id, plan.next_chunk_index
+        ));
+    }
+    if plan.refs.len().saturating_add(request.refs.len()) > plan.expected_ref_count {
+        return Err(format!(
+            "refs chunks for plan_id={} exceed expected_ref_count={}",
+            request.plan_id, plan.expected_ref_count
+        ));
+    }
+    plan.refs.extend(request.refs);
+    plan.next_chunk_index += 1;
+    current.phase = "blob_paced_get_staging".to_string();
+    runtime.generation += 1;
+    Ok(())
+}
+
+pub(crate) async fn prepare_blob_get_finish_on_node(
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    request: PrepareBlobGetFinishRequest,
+) -> Result<(), String> {
+    let (run_dir, store, staging) = {
+        let mut runtime = runtime.lock().await;
+        let current = current_expr_mut(&mut runtime, &request.run_id)?;
+        let store = current
+            .blob_store
+            .as_ref()
+            .ok_or_else(|| {
+                "prepare_blob_get_finish requires initialized blob_store state".to_string()
+            })?
+            .handle
+            .clone();
+        let staging = current
+            .paced_get_staging
+            .remove(&request.plan_id)
+            .ok_or_else(|| format!("unknown paced get staging plan_id={}", request.plan_id))?;
+        (current.run_dir.clone(), store, staging)
+    };
+    if staging.refs.len() != staging.expected_ref_count {
+        return Err(format!(
+            "paced get plan_id={} received {} refs, expected {}",
+            request.plan_id,
+            staging.refs.len(),
+            staging.expected_ref_count
+        ));
+    }
+
+    let refs = parse_blob_refs(&store, &staging.refs)?;
+    let output_dir = run_dir
+        .join("materialized")
+        .join(unique_batch_id("paced-get"));
+    tokio::fs::create_dir_all(&output_dir)
+        .await
+        .map_err(|err| {
+            format!(
+                "failed to create materialize output dir {}: {err}",
+                output_dir.display()
+            )
+        })?;
+
+    let mut runtime = runtime.lock().await;
+    let current = current_expr_mut(&mut runtime, &request.run_id)?;
+    current.paced_get_plans.insert(
+        request.plan_id,
+        PreparedPacedBlobGet {
+            target_ops_per_s: staging.target_ops_per_s,
+            max_in_flight: staging.max_in_flight,
+            refs,
+            materialized_dir: output_dir,
+        },
+    );
+    current.phase = "blob_paced_get_ready".to_string();
+    runtime.generation += 1;
+    Ok(())
+}
+
+pub(crate) async fn submit_prepared_blob_get_on_node(
+    instance_id: &str,
+    runtime: Arc<Mutex<NodeRuntimeState>>,
+    request: StartPreparedBlobGetRequest,
+) -> AcceptedResponse {
+    let accepted =
+        create_request_on_node(instance_id, &runtime, &request.run_id, "blob-get-prepared").await;
+    let Some(req_id) = accepted.req_id.clone() else {
+        return accepted;
+    };
+
+    tokio::spawn(async move {
+        let run_id = request.run_id.clone();
+        let started_at = Instant::now();
+        let result = prepared_paced_blob_get_on_node(&runtime, request).await;
+        match result {
+            Ok((materialized_dir, total_bytes, paced)) => {
+                let result = RequestResult::PacedBlobGet(PacedBlobGetResult {
+                    count: paced.completed_tasks,
+                    total_bytes,
+                    elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+                    materialized_dir,
+                    paced,
+                });
+                if let Err(err) = finish_request_on_node(&runtime, &run_id, &req_id, result).await {
+                    eprintln!("failed to finish prepared blob get request {req_id}: {err}");
+                }
+            }
+            Err(message) => {
+                if let Err(err) = fail_request_on_node(&runtime, &run_id, &req_id, message).await {
+                    eprintln!("failed to fail prepared blob get request {req_id}: {err}");
                 }
             }
         }
@@ -389,6 +557,71 @@ pub(crate) async fn paced_blob_get_on_node(
     )
     .await?;
     let paths = materialized_paths(&output_dir, request.refs.len());
+    let total_bytes = sum_existing_file_sizes(&paths).await?;
+
+    let output_dir_string = path_to_string(&output_dir);
+    let mut runtime = runtime.lock().await;
+    let current = current_expr_mut(&mut runtime, &request.run_id)?;
+    put_artifact(
+        current,
+        "paced_materialized_dir",
+        "paced_materialized_dir",
+        serde_json::Value::String(output_dir_string.clone()),
+    );
+    put_metric(current, "blob_get_total_bytes", total_bytes as f64, "bytes");
+    current.phase = "blob_paced_get_finished".to_string();
+    runtime.generation += 1;
+    Ok((output_dir_string, total_bytes, paced))
+}
+
+pub(crate) async fn prepared_paced_blob_get_on_node(
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    request: StartPreparedBlobGetRequest,
+) -> Result<(String, u64, crate::driver::paced::PacedTaskRunReport), String> {
+    let plan = {
+        let mut runtime = runtime.lock().await;
+        let current = current_expr_mut(&mut runtime, &request.run_id)?;
+        let plan = current
+            .paced_get_plans
+            .remove(&request.plan_id)
+            .ok_or_else(|| format!("unknown prepared paced get plan_id={}", request.plan_id))?;
+        current.phase = "blob_paced_get_armed".to_string();
+        runtime.generation += 1;
+        plan
+    };
+
+    if let Some(start_after_unix_ns) = request.start_after_unix_ns {
+        wait_until_unix_ns(start_after_unix_ns).await;
+    }
+
+    let (store, output_dir) = {
+        let runtime = runtime.lock().await;
+        let current = current_expr(&runtime, &request.run_id)?;
+        (
+            current
+                .blob_store
+                .as_ref()
+                .ok_or_else(|| {
+                    "start_prepared_blob_get requires initialized blob_store state".to_string()
+                })?
+                .handle
+                .clone(),
+            plan.materialized_dir.clone(),
+        )
+    };
+
+    let ref_count = plan.refs.len();
+    let tasks = build_get_tasks(store, plan.refs, output_dir.clone());
+    let paced = run_paced_tasks(
+        tasks,
+        PacedTaskRunConfig {
+            target_ops_per_s: plan.target_ops_per_s,
+            max_in_flight: plan.max_in_flight,
+            pacer_core_id: None,
+        },
+    )
+    .await?;
+    let paths = materialized_paths(&output_dir, ref_count);
     let total_bytes = sum_existing_file_sizes(&paths).await?;
 
     let output_dir_string = path_to_string(&output_dir);

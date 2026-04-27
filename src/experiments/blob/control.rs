@@ -10,12 +10,13 @@ use crate::rpc::client::{connect_node, ensure_finished_result};
 use crate::rpc::protocol::{
     AcceptedResponse, BeginExprRequest, BlobGetResult, BlobPutResult, GetBlobBatchRequest,
     InitBlobStoreRequest, PacedBlobGetRequest, PacedBlobGetResult, PollRequestRequest,
-    PollRequestResponse, PutBlobBatchRequest, RequestResult, ResetExprRequest, RunBlobGetRequest,
-    RunBlobGetResponse,
+    PollRequestResponse, PrepareBlobGetAppendRequest, PrepareBlobGetBeginRequest,
+    PrepareBlobGetFinishRequest, PutBlobBatchRequest, RequestResult, ResetExprRequest,
+    RunBlobGetRequest, RunBlobGetResponse, StartPreparedBlobGetRequest,
 };
 use crate::rpc::server::blob::{
     init_blob_store_on_node, submit_blob_get_batch_on_node, submit_blob_put_batch_on_node,
-    submit_paced_blob_get_on_node,
+    submit_paced_blob_get_on_node, submit_prepared_blob_get_on_node,
 };
 use crate::rpc::server::state::{
     begin_expr_on_node, poll_request_on_node, reset_expr_on_node, response_to_result,
@@ -304,6 +305,7 @@ pub(super) async fn get_blob_batch_on_target(
     }
 }
 
+#[allow(dead_code)]
 pub(super) async fn paced_blob_get_on_target(
     instances: &InstancesConfig,
     instance: &InstanceConfig,
@@ -339,6 +341,126 @@ pub(super) async fn paced_blob_get_on_target(
         RequestResult::PacedBlobGet(result) => Ok(result),
         other => Err(format!(
             "target {target_id} returned unexpected result for paced blob get: {other:?}"
+        )),
+    }
+}
+
+pub(super) async fn prepare_blob_get_begin_on_target(
+    instances: &InstancesConfig,
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    target_id: &str,
+    request: PrepareBlobGetBeginRequest,
+) -> Result<(), String> {
+    if target_id == instance.id {
+        crate::rpc::server::blob::prepare_blob_get_begin_on_node(runtime, request).await
+    } else {
+        let target = instances
+            .find_instance(target_id)
+            .ok_or_else(|| format!("unknown target instance id: {target_id}"))?;
+        let response = connect_node(target)
+            .await?
+            .prepare_blob_get_begin(context::current(), request)
+            .await
+            .map_err(|err| format!("prepare_blob_get_begin RPC failed for {}: {err}", target.id))?;
+        response_to_result(response)
+    }
+}
+
+pub(super) async fn prepare_blob_get_append_on_target(
+    instances: &InstancesConfig,
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    target_id: &str,
+    request: PrepareBlobGetAppendRequest,
+) -> Result<(), String> {
+    if target_id == instance.id {
+        crate::rpc::server::blob::prepare_blob_get_append_on_node(runtime, request).await
+    } else {
+        let target = instances
+            .find_instance(target_id)
+            .ok_or_else(|| format!("unknown target instance id: {target_id}"))?;
+        let response = connect_node(target)
+            .await?
+            .prepare_blob_get_append(context::current(), request)
+            .await
+            .map_err(|err| {
+                format!(
+                    "prepare_blob_get_append RPC failed for {}: {err}",
+                    target.id
+                )
+            })?;
+        response_to_result(response)
+    }
+}
+
+pub(super) async fn prepare_blob_get_finish_on_target(
+    instances: &InstancesConfig,
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    target_id: &str,
+    request: PrepareBlobGetFinishRequest,
+) -> Result<(), String> {
+    if target_id == instance.id {
+        crate::rpc::server::blob::prepare_blob_get_finish_on_node(runtime, request).await
+    } else {
+        let target = instances
+            .find_instance(target_id)
+            .ok_or_else(|| format!("unknown target instance id: {target_id}"))?;
+        let response = connect_node(target)
+            .await?
+            .prepare_blob_get_finish(context::current(), request)
+            .await
+            .map_err(|err| {
+                format!(
+                    "prepare_blob_get_finish RPC failed for {}: {err}",
+                    target.id
+                )
+            })?;
+        response_to_result(response)
+    }
+}
+
+pub(super) async fn start_prepared_blob_get_on_target(
+    instances: &InstancesConfig,
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    target_id: &str,
+    barrier_timeout_ms: u64,
+    request: StartPreparedBlobGetRequest,
+) -> Result<PacedBlobGetResult, String> {
+    let run_id = request.run_id.clone();
+    let accepted = if target_id == instance.id {
+        submit_prepared_blob_get_on_node(&instance.id, runtime.clone(), request).await
+    } else {
+        let target = instances
+            .find_instance(target_id)
+            .ok_or_else(|| format!("unknown target instance id: {target_id}"))?;
+        connect_node(target)
+            .await?
+            .start_prepared_blob_get(context::current(), request)
+            .await
+            .map_err(|err| {
+                format!(
+                    "start_prepared_blob_get RPC failed for {}: {err}",
+                    target.id
+                )
+            })?
+    };
+    let result = wait_for_request_result_on_target(
+        instances,
+        instance,
+        runtime,
+        target_id,
+        &run_id,
+        barrier_timeout_ms,
+        accepted,
+    )
+    .await?;
+    match result {
+        RequestResult::PacedBlobGet(result) => Ok(result),
+        other => Err(format!(
+            "target {target_id} returned unexpected result for prepared paced blob get: {other:?}"
         )),
     }
 }

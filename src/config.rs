@@ -139,6 +139,8 @@ pub struct RegistryConfig {
 pub struct InstanceConfig {
     pub id: String,
     pub rpc_addr: String,
+    #[serde(default)]
+    pub rpc_listen_addr: Option<String>,
     pub p2p_advertise_endpoint: String,
     pub work_dir: PathBuf,
     #[serde(default)]
@@ -168,6 +170,14 @@ impl InstancesConfig {
             }
             if instance.rpc_addr.trim().is_empty() {
                 return Err(format!("instance {} has empty rpc_addr", instance.id));
+            }
+            if let Some(rpc_listen_addr) = &instance.rpc_listen_addr {
+                if rpc_listen_addr.trim().is_empty() {
+                    return Err(format!(
+                        "instance {} has empty rpc_listen_addr",
+                        instance.id
+                    ));
+                }
             }
             if instance.p2p_advertise_endpoint.trim().is_empty() {
                 return Err(format!(

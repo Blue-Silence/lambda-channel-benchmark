@@ -34,13 +34,14 @@ import record_single
 import refresh_nodes
 import run_proxy_experiment
 import start_expr_servers
+import workflow_paths
 from nodes import read_nodes
 from ssh import connect
 
 METADATA_EXPERIMENTS = [
-    "config/experiments/metadata/append.toml",
-    "config/experiments/metadata/prefix-scan.toml",
-    "config/experiments/metadata/competitive-claim-local.toml",
+    "config/experiments/metadata/single-node/append.toml",
+    "config/experiments/metadata/single-node/prefix-scan.toml",
+    "config/experiments/metadata/single-node/competitive-claim-local.toml",
 ]
 
 DYNAMODB_TABLE_PREFIXES = [
@@ -63,16 +64,6 @@ def log(message: str) -> None:
 def local_path(value: str | Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else (ROOT / path).resolve()
-
-
-def default_csv_output(cloudlab_config: str, name: str) -> Path:
-    cfg = configparser.ConfigParser()
-    cfg.read(cloudlab_config)
-    results_dir = "cloudlab/results"
-    if cfg.has_section("paths"):
-        results_dir = cfg["paths"].get("results_dir", results_dir)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    return local_path(results_dir) / "workflow" / f"{name}-{stamp}.csv"
 
 
 def run(command: list[str]) -> None:
@@ -129,7 +120,7 @@ def settle_after_experiment(args: argparse.Namespace) -> None:
     time.sleep(args.settle_sec)
 
 
-def run_proxy_command(args: argparse.Namespace, experiment: str) -> list[str]:
+def run_proxy_command(args: argparse.Namespace, experiment: str, index: int) -> list[str]:
     command = [
         "--config",
         args.cloudlab_config,
@@ -139,6 +130,8 @@ def run_proxy_command(args: argparse.Namespace, experiment: str) -> list[str]:
         experiment,
         "--csv",
         args.csv_output,
+        "--log",
+        str(workflow_paths.proxy_log_path(args.workflow_outputs, experiment, index)),
     ]
     if args.rpc_url:
         command += ["--rpc-url", args.rpc_url]
@@ -150,7 +143,7 @@ def collect_remote_node_logs(args: argparse.Namespace) -> None:
     cfg.read(args.cloudlab_config)
     nodes = read_nodes(local_path(cfg["paths"].get("nodes_file")))
     remote_expr_log = cfg["runtime"].get("remote_expr_log", "/local/lc-bench-node.log")
-    output_dir = Path(args.csv_output).parent / "remote-logs"
+    output_dir = args.workflow_outputs.remote_log_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for node in nodes:
@@ -239,18 +232,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args.cloudlab_config = str(local_path(args.cloudlab_config))
     args.allocate_config = str(local_path(args.allocate_config))
     args.experiments = [str(local_path(path)) for path in args.experiments]
-    args.csv_output = str(
-        local_path(args.csv_output)
-        if args.csv_output
-        else default_csv_output(args.cloudlab_config, "metadata")
-    )
+    args.csv_output = str(local_path(args.csv_output)) if args.csv_output else None
+    args.workflow_stamp = workflow_paths.timestamp()
     return args
+
+
+def configure_workflow_outputs(args: argparse.Namespace) -> None:
+    outputs = workflow_paths.workflow_outputs(
+        root=ROOT,
+        cloudlab_config=args.cloudlab_config,
+        allocate_config=args.allocate_config,
+        workflow_name="metadata",
+        csv_prefix="metadata",
+        stamp=args.workflow_stamp,
+        csv_output=args.csv_output,
+    )
+    args.workflow_outputs = outputs
+    args.csv_output = str(outputs.csv_output)
+    log(f"remote profile: {outputs.profile_name}")
+    log(f"workflow CSV output: {args.csv_output}")
+    log(f"workflow log dir: {outputs.log_dir}")
 
 
 def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult]:
     args = parse_args(argv)
     proxy_results: list[run_proxy_experiment.ProxyResult] = []
-    log(f"workflow CSV output: {args.csv_output}")
 
     # 0. Local sanity check and local release binary for the proxy.
     run(["cargo", "test"])
@@ -296,6 +302,8 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
     else:
         log("skip allocation; using existing nodes file")
         refresh_recorded_nodes(args)
+
+    configure_workflow_outputs(args)
 
     # 3. Wait/check readiness, then deploy and start the long-lived node daemon.
     ready_args = [
@@ -350,10 +358,10 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
                 raise RuntimeError(f"preflight AWS GC had {gc_result.failures} failure(s)")
 
         # 5. Run each metadata experiment from the local proxy.
-        for experiment in args.experiments:
+        for index, experiment in enumerate(args.experiments):
             check_node_rpc_health(args)
             log(f"run proxy experiment: {experiment}")
-            proxy_result = run_proxy_experiment.main(run_proxy_command(args, experiment))
+            proxy_result = run_proxy_experiment.main(run_proxy_command(args, experiment, index))
             proxy_results.append(proxy_result)
             log(f"csv output: {proxy_result.csv_output}")
             log(f"log output: {proxy_result.log_output}")

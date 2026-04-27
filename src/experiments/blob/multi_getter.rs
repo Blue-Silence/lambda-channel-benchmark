@@ -11,13 +11,18 @@ use crate::config::{ExperimentSpec, InstanceConfig, InstancesConfig};
 use crate::driver::latency::LatencySummary;
 use crate::driver::paced::PacedTaskRunReport;
 use crate::experiments::blob::control::{
-    begin_on_target, init_blob_store_on_target_with_request, paced_blob_get_on_target,
-    put_blob_batch_on_target, reset_on_target,
+    begin_on_target, init_blob_store_on_target_with_request, prepare_blob_get_append_on_target,
+    prepare_blob_get_begin_on_target, prepare_blob_get_finish_on_target, put_blob_batch_on_target,
+    reset_on_target, start_prepared_blob_get_on_target,
 };
 use crate::rpc::protocol::{
-    InitBlobStoreRequest, PacedBlobGetRequest, PacedBlobGetResult, PutBlobBatchRequest,
+    InitBlobStoreRequest, PacedBlobGetResult, PrepareBlobGetAppendRequest,
+    PrepareBlobGetBeginRequest, PrepareBlobGetFinishRequest, PutBlobBatchRequest,
+    StartPreparedBlobGetRequest,
 };
 use crate::rpc::server::state::NodeRuntimeState;
+
+const REF_CHUNK_SIZE: usize = 1024;
 
 pub(super) async fn run(
     instance: &InstanceConfig,
@@ -170,19 +175,62 @@ async fn run_datapoint(
         .await?;
     }
 
+    let refs_chunk_count = source_put.refs.len().div_ceil(REF_CHUNK_SIZE);
+    for getter_id in getter_ids {
+        let plan_id = getter_plan_id(datapoint_index, getter_id);
+        prepare_blob_get_begin_on_target(
+            instances,
+            instance,
+            runtime,
+            getter_id,
+            PrepareBlobGetBeginRequest {
+                run_id: run_id.clone(),
+                plan_id: plan_id.clone(),
+                expected_ref_count: source_put.refs.len(),
+                target_ops_per_s: per_getter_rate,
+                max_in_flight: experiment.benchmark.concurrency,
+            },
+        )
+        .await?;
+        for (chunk_index, refs) in source_put.refs.chunks(REF_CHUNK_SIZE).enumerate() {
+            prepare_blob_get_append_on_target(
+                instances,
+                instance,
+                runtime,
+                getter_id,
+                PrepareBlobGetAppendRequest {
+                    run_id: run_id.clone(),
+                    plan_id: plan_id.clone(),
+                    chunk_index: chunk_index as u64,
+                    refs: refs.to_vec(),
+                },
+            )
+            .await?;
+        }
+        prepare_blob_get_finish_on_target(
+            instances,
+            instance,
+            runtime,
+            getter_id,
+            PrepareBlobGetFinishRequest {
+                run_id: run_id.clone(),
+                plan_id,
+            },
+        )
+        .await?;
+    }
+
     let start_after_unix_ns = future_start_unix_ns(Duration::from_secs(2));
     let getter_futures = getter_ids.iter().map(|getter_id| {
-        paced_blob_get_on_target(
+        start_prepared_blob_get_on_target(
             instances,
             instance,
             runtime,
             getter_id,
             experiment.coordination.barrier_timeout_ms,
-            PacedBlobGetRequest {
+            StartPreparedBlobGetRequest {
                 run_id: run_id.clone(),
-                refs: source_put.refs.clone(),
-                target_ops_per_s: per_getter_rate,
-                max_in_flight: experiment.benchmark.concurrency,
+                plan_id: getter_plan_id(datapoint_index, getter_id),
                 start_after_unix_ns: Some(start_after_unix_ns),
             },
         )
@@ -224,6 +272,8 @@ async fn run_datapoint(
         refs_distribution: "shared-list".to_string(),
         getter_reuse_policy: "no-repeat".to_string(),
         cross_getter_reuse: true,
+        refs_chunk_size: REF_CHUNK_SIZE as u64,
+        refs_chunk_count: refs_chunk_count as u64,
         per_getter_target_ops_per_s: per_getter_rate,
         aggregate_target_ops_per_s: overall_rate,
         preload_put_ms,
@@ -236,6 +286,10 @@ async fn run_datapoint(
         paced: aggregate,
         per_getter,
     })
+}
+
+fn getter_plan_id(datapoint_index: usize, getter_id: &str) -> String {
+    format!("datapoint-{datapoint_index:06}-{getter_id}")
 }
 
 fn source_id(experiment: &ExperimentSpec) -> Result<String, String> {
@@ -385,6 +439,8 @@ struct MultiGetterDatapointReport {
     refs_distribution: String,
     getter_reuse_policy: String,
     cross_getter_reuse: bool,
+    refs_chunk_size: u64,
+    refs_chunk_count: u64,
     per_getter_target_ops_per_s: f64,
     aggregate_target_ops_per_s: f64,
     preload_put_ms: f64,

@@ -18,7 +18,7 @@ library itself.
 ## Current CLI Shape
 
 ```bash
-cargo run -- proxy --url 127.0.0.1:19000 --experiment config/experiments/metadata/append.toml
+cargo run -- proxy --url 127.0.0.1:19000 --experiment config/experiments/metadata/single-node/append.toml
 cargo run -- blob --backend local-file --object-size 64MiB --operations 1000
 cargo run -- sender --backend local-file --operations 10000
 cargo run -- receiver --backend local-file --operations 10000
@@ -78,7 +78,7 @@ Current coordination skeleton:
 ```bash
 LC_BENCH_INSTANCE_ID=local-a cargo run -- node --instances config/instances/local-two.toml
 LC_BENCH_INSTANCE_ID=local-b cargo run -- node --instances config/instances/local-two.toml
-cargo run -- proxy --url 127.0.0.1:19000 --experiment config/experiments/blob/get-materialize.toml
+cargo run -- proxy --url 127.0.0.1:19000 --experiment config/experiments/blob/microbench/get-materialize.toml
 cargo run -- blob-get --coordinator local-a --peer local-b --backend local-file --count 1000 --object-size 64KiB
 ```
 
@@ -86,7 +86,7 @@ Single-node topology:
 
 ```bash
 cargo run -- node --instances config/instances/single-node.toml
-cargo run -- proxy --url node-0:19000 --experiment config/experiments/blob/put.toml
+cargo run -- proxy --url node-0:19000 --experiment config/experiments/blob/put/32b/local-file.toml
 ```
 
 `--instance-id` can still be passed explicitly for local development. The old

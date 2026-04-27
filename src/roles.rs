@@ -494,6 +494,7 @@ mod tests {
                 .map(|id| InstanceConfig {
                     id: (*id).to_string(),
                     rpc_addr: format!("{id}:19000"),
+                    rpc_listen_addr: None,
                     p2p_advertise_endpoint: format!("http://{id}:18080"),
                     work_dir: PathBuf::from(format!(".bench/{id}")),
                     capabilities: Vec::new(),

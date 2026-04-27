@@ -15,6 +15,10 @@ pub trait NodeRpc {
     async fn put_blob_batch(request: PutBlobBatchRequest) -> AcceptedResponse;
     async fn get_blob_batch(request: GetBlobBatchRequest) -> AcceptedResponse;
     async fn get_blob_paced(request: PacedBlobGetRequest) -> AcceptedResponse;
+    async fn prepare_blob_get_begin(request: PrepareBlobGetBeginRequest) -> ExprActionResponse;
+    async fn prepare_blob_get_append(request: PrepareBlobGetAppendRequest) -> ExprActionResponse;
+    async fn prepare_blob_get_finish(request: PrepareBlobGetFinishRequest) -> ExprActionResponse;
+    async fn start_prepared_blob_get(request: StartPreparedBlobGetRequest) -> AcceptedResponse;
     async fn poll_expr(request: PollExprRequest) -> PollExprResponse;
     async fn poll_request(request: PollRequestRequest) -> PollRequestResponse;
     async fn reset_expr(request: ResetExprRequest) -> ExprActionResponse;
@@ -141,6 +145,36 @@ pub struct PacedBlobGetRequest {
     pub refs: Vec<serde_json::Value>,
     pub target_ops_per_s: f64,
     pub max_in_flight: usize,
+    pub start_after_unix_ns: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PrepareBlobGetBeginRequest {
+    pub run_id: String,
+    pub plan_id: String,
+    pub expected_ref_count: usize,
+    pub target_ops_per_s: f64,
+    pub max_in_flight: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PrepareBlobGetAppendRequest {
+    pub run_id: String,
+    pub plan_id: String,
+    pub chunk_index: u64,
+    pub refs: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PrepareBlobGetFinishRequest {
+    pub run_id: String,
+    pub plan_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StartPreparedBlobGetRequest {
+    pub run_id: String,
+    pub plan_id: String,
     pub start_after_unix_ns: Option<u64>,
 }
 

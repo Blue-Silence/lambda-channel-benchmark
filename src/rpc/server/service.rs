@@ -9,12 +9,14 @@ use crate::rpc::protocol::{
     GetBlobBatchRequest, HealthRequest, HealthResponse, InitBlobStoreRequest,
     InitMetadataStoreRequest, InitReceiverRequest, InitSenderRequest, NodeDescription, NodeRpc,
     PacedBlobGetRequest, PollExprRequest, PollExprResponse, PollRequestRequest,
-    PollRequestResponse, PutBlobBatchRequest, RequestResult, ResetExprRequest, RunBlobGetRequest,
-    RunBlobGetResponse, RunExperimentRequest,
+    PollRequestResponse, PrepareBlobGetAppendRequest, PrepareBlobGetBeginRequest,
+    PrepareBlobGetFinishRequest, PutBlobBatchRequest, RequestResult, ResetExprRequest,
+    RunBlobGetRequest, RunBlobGetResponse, RunExperimentRequest, StartPreparedBlobGetRequest,
 };
 use crate::rpc::server::blob::{
-    init_blob_store_on_node, submit_blob_get_batch_on_node, submit_blob_put_batch_on_node,
-    submit_paced_blob_get_on_node,
+    init_blob_store_on_node, prepare_blob_get_append_on_node, prepare_blob_get_begin_on_node,
+    prepare_blob_get_finish_on_node, submit_blob_get_batch_on_node, submit_blob_put_batch_on_node,
+    submit_paced_blob_get_on_node, submit_prepared_blob_get_on_node,
 };
 use crate::rpc::server::state::{
     action_response, begin_expr_on_node, create_request_on_node, fail_request_on_node,
@@ -149,6 +151,53 @@ impl NodeRpc for NodeRpcService {
         request: PacedBlobGetRequest,
     ) -> AcceptedResponse {
         submit_paced_blob_get_on_node(&self.instance.id, self.runtime.clone(), request).await
+    }
+
+    async fn prepare_blob_get_begin(
+        self,
+        _: context::Context,
+        request: PrepareBlobGetBeginRequest,
+    ) -> ExprActionResponse {
+        action_response(
+            &self.instance.id,
+            prepare_blob_get_begin_on_node(&self.runtime, request).await,
+            &self.runtime,
+        )
+        .await
+    }
+
+    async fn prepare_blob_get_append(
+        self,
+        _: context::Context,
+        request: PrepareBlobGetAppendRequest,
+    ) -> ExprActionResponse {
+        action_response(
+            &self.instance.id,
+            prepare_blob_get_append_on_node(&self.runtime, request).await,
+            &self.runtime,
+        )
+        .await
+    }
+
+    async fn prepare_blob_get_finish(
+        self,
+        _: context::Context,
+        request: PrepareBlobGetFinishRequest,
+    ) -> ExprActionResponse {
+        action_response(
+            &self.instance.id,
+            prepare_blob_get_finish_on_node(&self.runtime, request).await,
+            &self.runtime,
+        )
+        .await
+    }
+
+    async fn start_prepared_blob_get(
+        self,
+        _: context::Context,
+        request: StartPreparedBlobGetRequest,
+    ) -> AcceptedResponse {
+        submit_prepared_blob_get_on_node(&self.instance.id, self.runtime.clone(), request).await
     }
 
     async fn poll_expr(self, _: context::Context, request: PollExprRequest) -> PollExprResponse {
