@@ -9,6 +9,7 @@ use lambda_channel::metadata_store_impl::in_memory::AsyncInMemoryMetadataStore;
 use lambda_channel::metadata_store_impl::MetadataStoreHandle;
 use tokio::sync::Mutex;
 
+use crate::blob_store_factory::unique_resource_id;
 use crate::config::InstanceConfig;
 use crate::rpc::protocol::{
     AcceptedResponse, Artifact, BeginExprRequest, ExprActionResponse, InitMetadataStoreRequest,
@@ -156,11 +157,6 @@ pub(crate) async fn begin_expr_on_node(
         return Err("run_id must not be empty".to_string());
     }
 
-    let run_dir = instance.work_dir.join("runs").join(&request.run_id);
-    tokio::fs::create_dir_all(&run_dir)
-        .await
-        .map_err(|err| format!("failed to create expr run dir {}: {err}", run_dir.display()))?;
-
     let old = {
         let mut runtime = runtime.lock().await;
         if let Some(current) = runtime.current.as_ref() {
@@ -177,6 +173,14 @@ pub(crate) async fn begin_expr_on_node(
         runtime.current.take()
     };
     close_expr_state(old).await?;
+
+    let run_dir = instance
+        .work_dir
+        .join("runs")
+        .join(unique_resource_id(&request.run_id, &instance.id));
+    tokio::fs::create_dir_all(&run_dir)
+        .await
+        .map_err(|err| format!("failed to create expr run dir {}: {err}", run_dir.display()))?;
 
     let mut runtime = runtime.lock().await;
     runtime.current = Some(ExprState {
@@ -639,15 +643,53 @@ async fn close_expr_state(expr: Option<ExprState>) -> Result<(), String> {
     let Some(expr) = expr else {
         return Ok(());
     };
+    let mut errors = Vec::new();
     if let Some(blob_store) = expr.blob_store {
-        blob_store.handle.close().await.map_err(|err| {
-            format!(
-                "failed to close blob store for run_id={}: {err}",
-                expr.run_id
-            )
-        })?;
+        if let Err(err) = close_blob_store_resource(blob_store, &expr.run_id).await {
+            errors.push(err);
+        }
     }
-    Ok(())
+    match tokio::fs::remove_dir_all(&expr.run_dir).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => errors.push(format!(
+            "failed to remove expr run dir {}: {err}",
+            expr.run_dir.display()
+        )),
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+pub(crate) async fn close_blob_store_resource(
+    blob_store: BlobStoreResource,
+    run_id: &str,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    if let Err(err) = blob_store.handle.close().await {
+        errors.push(format!(
+            "failed to close blob store for run_id={run_id}: {err}"
+        ));
+    }
+    if let Some(root_dir) = blob_store.root_dir {
+        let path = PathBuf::from(root_dir);
+        match tokio::fs::remove_dir_all(&path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => errors.push(format!(
+                "failed to remove blob store resource dir {}: {err}",
+                path.display()
+            )),
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 fn parse_consume_mode(value: &str) -> Result<ConsumeMode, String> {

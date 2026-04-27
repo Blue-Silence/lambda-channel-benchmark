@@ -34,15 +34,10 @@ pub(crate) async fn init_blob_store_on_node(
         if current.blob_store.is_some() && !request.force_reinit {
             return Ok(());
         }
-        (
-            current.run_dir.clone(),
-            current.blob_store.take().map(|store| store.handle),
-        )
+        (current.run_dir.clone(), current.blob_store.take())
     };
     if let Some(old) = old {
-        old.close()
-            .await
-            .map_err(|err| format!("failed to close previous blob store: {err}"))?;
+        crate::rpc::server::state::close_blob_store_resource(old, &request.run_id).await?;
     }
 
     let resource_id = request
@@ -366,12 +361,21 @@ pub(crate) async fn put_blob_batch_on_node(
     if request.object_size_bytes == 0 {
         return Err("object_size_bytes must be greater than zero".to_string());
     }
+    if request.max_in_flight == 0 {
+        return Err("put_blob_batch max_in_flight must be greater than zero".to_string());
+    }
 
-    let (run_dir, store) = {
+    let (run_dir, store_backend, store) = {
         let runtime = runtime.lock().await;
         let current = current_expr(&runtime, &request.run_id)?;
         (
             current.run_dir.clone(),
+            current
+                .blob_store
+                .as_ref()
+                .ok_or_else(|| "put_blob_batch requires initialized blob_store state".to_string())?
+                .backend
+                .clone(),
             current
                 .blob_store
                 .as_ref()
@@ -390,32 +394,21 @@ pub(crate) async fn put_blob_batch_on_node(
             )
         })?;
 
-    let mut paths = Vec::with_capacity(request.count);
-    for idx in 0..request.count {
-        let path = payload_dir.join(format!("payload_{idx:06}.bin"));
-        create_timestamped_payload_file(
-            &path,
-            PayloadFileSpec {
-                run_id: &request.run_id,
-                seed: 0,
-                index: idx as u64,
-                size_bytes: request.object_size_bytes,
-            },
-        )
-        .await?;
-        paths.push(path_to_string(&path));
-    }
-
-    let mut refs = Vec::with_capacity(paths.len());
-    for path in &paths {
-        refs.push(
-            store
-                .put_file(path)
-                .await
-                .map_err(|err| format!("failed to put payload {path}: {err}"))?,
-        );
-    }
-    let total_bytes = sum_file_sizes(&paths).await?;
+    let cleanup_payloads_after_put = store_backend != "local-file";
+    let (refs, paths) = put_generated_files_concurrent(
+        store,
+        &payload_dir,
+        &request.run_id,
+        request.count,
+        request.object_size_bytes,
+        request.max_in_flight,
+        cleanup_payloads_after_put,
+    )
+    .await?;
+    let total_bytes = request
+        .object_size_bytes
+        .checked_mul(request.count as u64)
+        .ok_or_else(|| "blob put total bytes overflowed u64".to_string())?;
     let refs_json = blob_refs_to_json_values(&refs)?;
 
     let mut runtime = runtime.lock().await;
@@ -436,6 +429,79 @@ pub(crate) async fn put_blob_batch_on_node(
     current.phase = "blob_batch_ready".to_string();
     runtime.generation += 1;
     Ok((refs_json, total_bytes))
+}
+
+async fn put_generated_files_concurrent(
+    store: BlobStoreHandle,
+    payload_dir: &Path,
+    run_id: &str,
+    count: usize,
+    object_size_bytes: u64,
+    max_in_flight: usize,
+    cleanup_payloads_after_put: bool,
+) -> Result<(Vec<BlobRefHandle>, Vec<String>), String> {
+    let mut refs: Vec<Option<BlobRefHandle>> = vec![None; count];
+    let mut paths: Vec<Option<String>> = vec![None; count];
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut next_index = 0usize;
+
+    while next_index < count || !tasks.is_empty() {
+        while next_index < count && tasks.len() < max_in_flight {
+            let index = next_index;
+            let path = payload_dir.join(format!("payload_{index:06}.bin"));
+            let path_string = path_to_string(&path);
+            let run_id = run_id.to_string();
+            let store = store.clone();
+            tasks.spawn(async move {
+                create_timestamped_payload_file(
+                    &path,
+                    PayloadFileSpec {
+                        run_id: &run_id,
+                        seed: 0,
+                        index: index as u64,
+                        size_bytes: object_size_bytes,
+                    },
+                )
+                .await?;
+                let reference = store
+                    .put_file(&path_string)
+                    .await
+                    .map_err(|err| format!("failed to put payload {path_string}: {err}"))?;
+                if cleanup_payloads_after_put {
+                    tokio::fs::remove_file(&path).await.map_err(|err| {
+                        format!(
+                            "failed to remove staged payload {} after put: {err}",
+                            path.display()
+                        )
+                    })?;
+                }
+                Ok::<(usize, String, BlobRefHandle), String>((index, path_string, reference))
+            });
+            next_index += 1;
+        }
+
+        let Some(result) = tasks.join_next().await else {
+            continue;
+        };
+        let (index, path, reference) =
+            result.map_err(|err| format!("blob put task failed: {err}"))??;
+        paths[index] = Some(path);
+        refs[index] = Some(reference);
+    }
+
+    let refs = refs
+        .into_iter()
+        .enumerate()
+        .map(|(index, reference)| {
+            reference.ok_or_else(|| format!("missing blob ref for payload index {index}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let paths = paths
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| path.ok_or_else(|| format!("missing payload path for index {index}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((refs, paths))
 }
 
 pub(crate) async fn get_blob_batch_on_node(

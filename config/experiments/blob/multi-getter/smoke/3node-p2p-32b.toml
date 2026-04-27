@@ -6,7 +6,7 @@ output_dir = "out/blob-multi-getter-smoke-3node-p2p-32b"
 seed = 1
 
 [coordination]
-rpc_timeout_ms = 5000
+rpc_timeout_ms = 60000
 barrier_timeout_ms = 120000
 cleanup_timeout_ms = 30000
 force_reset_on_start = true

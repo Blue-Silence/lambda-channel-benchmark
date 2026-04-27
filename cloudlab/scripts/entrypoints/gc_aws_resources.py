@@ -211,6 +211,10 @@ def delete_table(table: str, env: dict[str, str], dry_run: bool) -> tuple[str, b
     if dry_run:
         return table, True, "dry-run: would delete DynamoDB table"
     rc, output = run_quiet(["aws", "dynamodb", "delete-table", "--table-name", table], env)
+    if rc != 0 and "ResourceInUseException" in output and "Table is being deleted" in output:
+        return table, True, "table is already being deleted"
+    if rc != 0 and "ResourceNotFoundException" in output:
+        return table, True, "table already deleted"
     return table, rc == 0, output or "delete-table submitted"
 
 

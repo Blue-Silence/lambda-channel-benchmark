@@ -73,6 +73,7 @@ pub(crate) async fn run_blob_get_on_node(
             run_id: request.run_id.clone(),
             count: request.count,
             object_size_bytes: request.object_size_bytes,
+            max_in_flight: request.count.clamp(1, 16),
         },
     )
     .await?;

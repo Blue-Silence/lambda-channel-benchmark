@@ -642,19 +642,6 @@ pub(super) fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-pub(super) fn sanitize_path_part(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 pub(super) fn env_any(experiment: &ExperimentSpec, keys: &[&str]) -> Option<String> {
     keys.iter()
         .find_map(|key| {

@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,8 @@ from nodes import Node, write_nodes
 
 DEFAULT_CONFIG = CLOUDLAB_DIR / ".config" / "allocate.ini"
 DEFAULT_PORTAL_URL = "https://www.cloudlab.us"
+PORTAL_ATTEMPTS = 3
+PORTAL_RETRY_DELAY_SEC = 5.0
 
 
 @dataclass(frozen=True)
@@ -129,19 +132,31 @@ def run_portal(
     if portal_token is not None:
         env["PORTAL_TOKEN"] = portal_token
 
-    try:
-        result = subprocess.run(
-            cmd,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        if exc.stdout:
-            print(exc.stdout, end="")
-        raise
+    last_error: subprocess.CalledProcessError | None = None
+    for attempt in range(1, PORTAL_ATTEMPTS + 1):
+        try:
+            result = subprocess.run(
+                cmd,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
+            break
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            if exc.stdout:
+                print(exc.stdout, end="")
+            if attempt == PORTAL_ATTEMPTS:
+                raise
+            log(
+                f"portal-cli failed on attempt {attempt}/{PORTAL_ATTEMPTS}; "
+                f"retrying in {PORTAL_RETRY_DELAY_SEC:.1f}s"
+            )
+            time.sleep(PORTAL_RETRY_DELAY_SEC)
+    else:
+        raise last_error or RuntimeError("portal-cli failed without an exception")
 
     if echo_output and result.stdout.strip():
         print(result.stdout, end="")
@@ -353,6 +368,31 @@ def load_settings(
     }
 
 
+def experiment_field(exp: Any, key: str) -> str:
+    if isinstance(exp, dict):
+        value = exp.get(key)
+        if value is not None:
+            return str(value).strip()
+    return ""
+
+
+def portal_experiment_fields(
+    exp: Any,
+    fallback: dict[str, str],
+) -> dict[str, str]:
+    fields = dict(fallback)
+    project = experiment_field(exp, "project")
+    profile_name = experiment_field(exp, "profile_name")
+    profile_project = experiment_field(exp, "profile_project")
+    if project:
+        fields["project"] = project
+    if profile_name:
+        fields["profile_name"] = profile_name
+    if profile_project:
+        fields["profile_project"] = profile_project
+    return fields
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Refresh nodes.ini from an existing CloudLab experiment."
@@ -401,6 +441,7 @@ def main(argv: list[str] | None = None) -> RefreshNodesResult:
         portal_token=settings["portal_token"],
     )
     dump_json(CLOUDLAB_DIR / ".generated/portal_get.json", exp)
+    experiment_fields = portal_experiment_fields(exp, settings["extra_fields"])
 
     manifest = get_manifests(
         experiment_id=settings["experiment_id"],
@@ -422,7 +463,7 @@ def main(argv: list[str] | None = None) -> RefreshNodesResult:
         experiment=settings["experiment"],
         topology="profile",
         nodes=nodes,
-        extra_experiment_fields=settings["extra_fields"],
+        extra_experiment_fields=experiment_fields,
     )
 
     log(f"wrote nodes for {len(nodes)} node(s)")

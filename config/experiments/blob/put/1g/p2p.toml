@@ -25,7 +25,6 @@ step_multiplier = 2.0
 max_ops_per_s = 4.0
 max_points = 3
 saturation_achieved_ratio = 0.5
-stop_on_failure = true
 
 [lambda_channel]
 metadata_backend = "dynamodb"

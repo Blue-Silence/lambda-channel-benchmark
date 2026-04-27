@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -25,6 +26,7 @@ pub(super) struct MetadataStoreResource {
 
 #[derive(Clone, Debug)]
 pub(super) enum MetadataCleanupResource {
+    LocalDir(PathBuf),
     DynamoDbTable { table_name: String },
 }
 
@@ -360,6 +362,7 @@ pub(super) async fn cleanup_resources(
 
 async fn cleanup_resource(resource: MetadataCleanupResource) -> Result<(), String> {
     match resource {
+        MetadataCleanupResource::LocalDir(path) => cleanup_local_dir(&path).await,
         MetadataCleanupResource::DynamoDbTable { table_name, .. } => {
             eprintln!(
                 "deferred AWS cleanup for DynamoDB table {table_name}; run cloudlab/scripts/entrypoints/gc_aws_resources.py by prefix"
@@ -367,6 +370,33 @@ async fn cleanup_resource(resource: MetadataCleanupResource) -> Result<(), Strin
             Ok(())
         }
     }
+}
+
+async fn cleanup_local_dir(path: &Path) -> Result<(), String> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!(
+            "failed to remove metadata resource dir {}: {err}",
+            path.display()
+        )),
+    }
+}
+
+pub(super) async fn create_resource_dir(
+    instance: &InstanceConfig,
+    resource_id: &str,
+) -> Result<PathBuf, String> {
+    let resource_dir = instance.work_dir.join("runs").join(resource_id);
+    tokio::fs::create_dir_all(&resource_dir)
+        .await
+        .map_err(|err| {
+            format!(
+                "failed to create metadata resource dir {}: {err}",
+                resource_dir.display()
+            )
+        })?;
+    Ok(resource_dir)
 }
 
 pub(super) fn new_channel_meta(channel_id: &str) -> ChannelMetaRecord {

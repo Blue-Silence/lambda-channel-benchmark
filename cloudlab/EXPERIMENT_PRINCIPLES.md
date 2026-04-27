@@ -106,6 +106,59 @@ Initial principle:
 
 ## Workload Principles
 
+### Setup Work
+
+Setup and preload phases should avoid artificial serialization. If a workload
+must create many independent blobs, metadata rows, or tracker records before
+the measured phase starts, the setup path should use bounded concurrency by
+default and record the concurrency used.
+
+Initial principle:
+
+- Do not use sequential preload for multi-object benchmark setup unless the
+  experiment is explicitly studying serialized setup cost.
+- Bound setup concurrency with an explicit knob so retries and managed-service
+  throttling remain controlled.
+- Keep setup latency out of the measured datapath, but record it separately
+  when it can affect experiment feasibility.
+- For blob multi-getter preload, default to `benchmark.concurrency` and allow
+  `LC_BENCH_BLOB_PRELOAD_CONCURRENCY` to override it.
+
+### Throughput Sweeps
+
+Throughput sweeps must stop once a completed datapoint shows the system is past
+the configured saturation threshold. This rule applies to every workload,
+including workload-specific sweeps that list explicit candidate rates.
+
+Initial principle:
+
+- Treat `throughput_sweep.points_ops_per_s` as a candidate list, not as a list
+  that must be exhausted unconditionally.
+- After every successful datapoint, compare successful throughput with target
+  throughput. Stop when `successful_ops_per_s / target_ops_per_s` is below
+  `saturation_achieved_ratio`, which defaults to `0.5`.
+- Failed tasks are datapoint quality signals, not saturation by themselves.
+  Record them in the datapoint and continue the sweep by default.
+- Use `stop_on_failure = true` only for experiments that explicitly want
+  fail-fast semantics. If enabled, stop after a datapoint reports failed tasks
+  instead of moving to a higher rate.
+- Do not continue into more expensive setup/preload work for higher rates after
+  the measured phase has already shown saturation.
+
+### Workflow Health Checks
+
+CloudLab workflows should tolerate short RPC or TCP hiccups around daemon
+restart and between experiment TOMLs.
+
+Initial principle:
+
+- Do not fail a long multi-point workflow on a single transient RPC health
+  timeout.
+- Retry node health checks with a bounded attempt count, per-attempt timeout,
+  and short delay before declaring the workflow failed.
+- Keep retries limited so real daemon crashes still surface promptly and trigger
+  normal log collection and cleanup.
+
 ### Object Size
 
 `32B` objects mostly measure request/control-plane overhead. They are useful,

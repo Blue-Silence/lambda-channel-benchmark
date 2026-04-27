@@ -6,7 +6,7 @@ output_dir = "out/blob-multi-getter-s3-32b"
 seed = 1
 
 [coordination]
-rpc_timeout_ms = 5000
+rpc_timeout_ms = 60000
 barrier_timeout_ms = 300000
 cleanup_timeout_ms = 30000
 force_reset_on_start = true
@@ -21,7 +21,7 @@ duration_seconds = 10
 repetitions = 1
 
 [throughput_sweep]
-points_ops_per_s = [800, 1600, 3200, 6400]
+points_ops_per_s = [100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600]
 
 [lambda_channel]
 metadata_backend = "inmemory"

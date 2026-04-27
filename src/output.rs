@@ -163,6 +163,7 @@ const EXPERIMENT_CSV_HEADER: &[&str] = &[
     "refs_chunk_size",
     "refs_chunk_count",
     "preload_put_ms",
+    "preload_put_concurrency",
     "preload_put_ops_per_s",
 ];
 
@@ -214,14 +215,18 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
             .get("counters")
             .unwrap_or(&serde_json::Value::Null);
         rows.push(vec![
-            "lambda-channel-benchmark/datapoint-v4".to_string(),
+            "lambda-channel-benchmark/datapoint-v5".to_string(),
             cell(report.get("run_id")),
             cell(report.get("workload")),
             cell(report.get("backend")),
             cell(report.get("instance_id")),
             index.to_string(),
             cell(datapoint.get("resource_id")),
-            cell(report.get("stop_reason")),
+            if index + 1 == datapoints.len() {
+                cell(report.get("stop_reason"))
+            } else {
+                String::new()
+            },
             cell(
                 datapoint
                     .get("operations")
@@ -310,6 +315,7 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
             cell(datapoint.get("refs_chunk_size")),
             cell(datapoint.get("refs_chunk_count")),
             cell(datapoint.get("preload_put_ms")),
+            cell(datapoint.get("preload_put_concurrency")),
             cell(datapoint.get("preload_put_ops_per_s")),
         ]);
     }
@@ -333,7 +339,7 @@ fn csv_needs_header_or_validate(path: &Path) -> Result<bool, String> {
                 Ok(false)
             } else {
                 Err(format!(
-                    "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v4 schema",
+                    "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v5 schema",
                     path.display()
                 ))
             }
@@ -474,7 +480,7 @@ mod tests {
         assert_eq!(rows[0].len(), EXPERIMENT_CSV_HEADER.len());
         assert_eq!(
             cell(&rows[0], "schema"),
-            "lambda-channel-benchmark/datapoint-v4"
+            "lambda-channel-benchmark/datapoint-v5"
         );
         assert_eq!(cell(&rows[0], "workload"), "metadata.append");
         assert_eq!(cell(&rows[0], "operation"), "put_elem");
@@ -559,6 +565,59 @@ mod tests {
         let rows = experiment_csv_rows(report).unwrap();
         assert_eq!(cell(&rows[0], "operations_per_point"), "32000");
         assert_eq!(cell(&rows[0], "warmup_operations_per_point"), "100");
+    }
+
+    #[test]
+    fn writes_stop_reason_only_on_terminal_datapoint() {
+        let report = r#"{
+            "run_id": "blob-put-local-file",
+            "workload": "blob.put.local_file",
+            "instance_id": "node-0",
+            "backend": "local-file",
+            "operations_per_point": 10,
+            "warmup_operations_per_point": 1,
+            "concurrency": 2,
+            "object_size_bytes": 32,
+            "stop_reason": "saturated",
+            "datapoints": [{
+                "resource_id": "res-1",
+                "store": {"root_dir": "/tmp/blob-1"},
+                "paced": {
+                    "target_ops_per_s": 10.0,
+                    "achieved_ops_per_s": 10.0,
+                    "successful_ops_per_s": 10.0,
+                    "total_tasks": 10,
+                    "completed_tasks": 10,
+                    "failed_tasks": 0,
+                    "wall_time_ms": 1000.0,
+                    "offered_latency": {},
+                    "service_latency": {},
+                    "schedule_lag": {},
+                    "failure_messages": []
+                }
+            }, {
+                "resource_id": "res-2",
+                "store": {"root_dir": "/tmp/blob-2"},
+                "paced": {
+                    "target_ops_per_s": 20.0,
+                    "achieved_ops_per_s": 8.0,
+                    "successful_ops_per_s": 8.0,
+                    "total_tasks": 20,
+                    "completed_tasks": 20,
+                    "failed_tasks": 0,
+                    "wall_time_ms": 2500.0,
+                    "offered_latency": {},
+                    "service_latency": {},
+                    "schedule_lag": {},
+                    "failure_messages": []
+                }
+            }]
+        }"#;
+
+        let rows = experiment_csv_rows(report).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(cell(&rows[0], "stop_reason"), "");
+        assert_eq!(cell(&rows[1], "stop_reason"), "saturated");
     }
 
     fn cell<'a>(row: &'a [String], column: &str) -> &'a str {

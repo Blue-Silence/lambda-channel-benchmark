@@ -53,16 +53,32 @@ EXPERIMENTS_128M = [
     "config/experiments/blob/multi-getter/9node/s3-128m.toml",
     "config/experiments/blob/multi-getter/9node/p2p-128m.toml",
 ]
+EXPERIMENTS_1G = [
+    "config/experiments/blob/multi-getter/9node/s3-1g.toml",
+    "config/experiments/blob/multi-getter/9node/p2p-1g.toml",
+]
 EXPERIMENTS_SMOKE_3NODE_32B = [
     "config/experiments/blob/multi-getter/smoke/3node-s3-32b.toml",
     "config/experiments/blob/multi-getter/smoke/3node-p2p-32b.toml",
+]
+EXPERIMENTS_TEMP_3NODE_ALL = [
+    "config/experiments/blob/multi-getter/3node/s3-32b.toml",
+    "config/experiments/blob/multi-getter/3node/p2p-32b.toml",
+    "config/experiments/blob/multi-getter/3node/s3-16m.toml",
+    "config/experiments/blob/multi-getter/3node/p2p-16m.toml",
+    "config/experiments/blob/multi-getter/3node/s3-128m.toml",
+    "config/experiments/blob/multi-getter/3node/p2p-128m.toml",
+    "config/experiments/blob/multi-getter/3node/s3-1g.toml",
+    "config/experiments/blob/multi-getter/3node/p2p-1g.toml",
 ]
 EXPERIMENT_SETS = {
     "32b": EXPERIMENTS_32B,
     "16m": EXPERIMENTS_16M,
     "128m": EXPERIMENTS_128M,
-    "all": EXPERIMENTS_32B + EXPERIMENTS_16M + EXPERIMENTS_128M,
+    "1g": EXPERIMENTS_1G,
+    "all": EXPERIMENTS_32B + EXPERIMENTS_16M + EXPERIMENTS_128M + EXPERIMENTS_1G,
     "smoke-3node-32b": EXPERIMENTS_SMOKE_3NODE_32B,
+    "temp-3node-all": EXPERIMENTS_TEMP_3NODE_ALL,
 }
 
 S3_BUCKET_PREFIXES = ["lcbench-blob-multiget"]
@@ -75,6 +91,9 @@ WORKFLOW_COLOR = "\033[1;36m"
 RESET_COLOR = "\033[0m"
 DEFAULT_ALLOCATE_CONFIG = "cloudlab/.config/allocate-9node.ini"
 EXPECTED_PROFILE = "LambdaChannel-9node"
+RPC_HEALTH_ATTEMPTS = 6
+RPC_HEALTH_TIMEOUT_SECONDS = 20
+RPC_HEALTH_RETRY_DELAY_SECONDS = 5
 
 
 def log(message: str) -> None:
@@ -146,12 +165,33 @@ def nodes_from_config(cloudlab_config: str):
     return read_nodes(local_path(cfg["paths"].get("nodes_file")))
 
 
+def recorded_portal_experiment_id(cloudlab_config: str) -> str:
+    cfg = configparser.ConfigParser()
+    cfg.read(cloudlab_config)
+    nodes_file = local_path(cfg["paths"].get("nodes_file"))
+    nodes_cfg = configparser.ConfigParser()
+    nodes_cfg.read(nodes_file)
+    if not nodes_cfg.has_section("experiment"):
+        return ""
+    return nodes_cfg["experiment"].get("portal_experiment_id", "").strip()
+
+
 def refresh_recorded_nodes(args: argparse.Namespace) -> None:
     command = ["--config", args.allocate_config]
     if args.refresh_experiment_id:
         command += ["--experiment-id", args.refresh_experiment_id]
     log("refresh nodes from CloudLab manifest")
-    result = refresh_nodes.main(command)
+    try:
+        result = refresh_nodes.main(command)
+    except Exception as exc:
+        recorded_id = recorded_portal_experiment_id(args.cloudlab_config)
+        if args.refresh_experiment_id and recorded_id == args.refresh_experiment_id:
+            log(
+                "refresh nodes failed; using existing nodes file because it "
+                f"already records portal_experiment_id={recorded_id}: {exc}"
+            )
+            return
+        raise
     log(f"refreshed nodes: {len(result.nodes)}")
     log(f"nodes file: {result.nodes_file}")
 
@@ -205,8 +245,28 @@ def require_participant_nodes(args: argparse.Namespace) -> None:
 
 def check_node_rpc_health(args: argparse.Namespace) -> None:
     rpc_url = default_rpc_url(args)
-    log(f"check node RPC health: {rpc_url}")
-    run([args.lc_bench, "health", "--url", rpc_url])
+    command = [args.lc_bench, "health", "--url", rpc_url]
+    for attempt in range(1, RPC_HEALTH_ATTEMPTS + 1):
+        log(f"check node RPC health: {rpc_url} (attempt {attempt}/{RPC_HEALTH_ATTEMPTS})")
+        try:
+            result = subprocess.run(
+                command,
+                cwd=ROOT,
+                check=False,
+                timeout=RPC_HEALTH_TIMEOUT_SECONDS,
+            )
+            if result.returncode == 0:
+                return
+            failure = f"exit code {result.returncode}"
+        except subprocess.TimeoutExpired:
+            failure = f"timed out after {RPC_HEALTH_TIMEOUT_SECONDS}s"
+        if attempt == RPC_HEALTH_ATTEMPTS:
+            raise RuntimeError(f"node RPC health failed after {RPC_HEALTH_ATTEMPTS} attempts: {failure}")
+        log(
+            "node RPC health failed "
+            f"({failure}); retrying in {RPC_HEALTH_RETRY_DELAY_SECONDS}s"
+        )
+        time.sleep(RPC_HEALTH_RETRY_DELAY_SECONDS)
 
 
 def run_proxy_command(args: argparse.Namespace, experiment: str, index: int) -> list[str]:
@@ -306,7 +366,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--experiment-set",
         choices=sorted(EXPERIMENT_SETS),
-        default=os.environ.get("BLOB_MULTI_GETTER_EXPERIMENT_SET", "32b"),
+        default=os.environ.get("BLOB_MULTI_GETTER_EXPERIMENT_SET", "all"),
     )
     args = parser.parse_args(argv)
 

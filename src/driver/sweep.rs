@@ -22,7 +22,7 @@ impl ThroughputSweepPolicy {
             max_ops_per_s: 1_000_000.0,
             max_points: 12,
             saturation_achieved_ratio: 0.5,
-            stop_on_failure: true,
+            stop_on_failure: false,
         }
     }
 
@@ -63,12 +63,29 @@ impl ThroughputSweepPolicy {
         completed_points: usize,
         report: &PacedTaskRunReport,
     ) -> SweepDecision {
-        if self.stop_on_failure && report.has_failures() {
+        self.decide_after_metrics(
+            completed_points,
+            report.target_ops_per_s,
+            report.successful_ops_per_s,
+            report.failed_tasks,
+        )
+    }
+
+    pub(crate) fn decide_after_metrics(
+        &self,
+        completed_points: usize,
+        target_ops_per_s: f64,
+        successful_ops_per_s: f64,
+        failed_tasks: usize,
+    ) -> SweepDecision {
+        if self.stop_on_failure && failed_tasks > 0 {
             return SweepDecision::Stop {
                 reason: SweepStopReason::FailedTasks,
             };
         }
-        if report.achieved_ratio() < self.saturation_achieved_ratio {
+        if target_ops_per_s <= 0.0
+            || successful_ops_per_s / target_ops_per_s < self.saturation_achieved_ratio
+        {
             return SweepDecision::Stop {
                 reason: SweepStopReason::Saturated,
             };
@@ -79,7 +96,7 @@ impl ThroughputSweepPolicy {
             };
         }
 
-        let next_ops_per_s = report.target_ops_per_s * self.step_multiplier;
+        let next_ops_per_s = target_ops_per_s * self.step_multiplier;
         if next_ops_per_s > self.max_ops_per_s {
             return SweepDecision::Stop {
                 reason: SweepStopReason::MaxOpsPerS,
@@ -113,10 +130,19 @@ mod tests {
     use super::{SweepDecision, SweepStopReason, ThroughputSweepPolicy};
 
     fn report(target: f64, achieved: f64, failed_tasks: usize) -> PacedTaskRunReport {
+        report_with_success(target, achieved, achieved, failed_tasks)
+    }
+
+    fn report_with_success(
+        target: f64,
+        achieved: f64,
+        successful: f64,
+        failed_tasks: usize,
+    ) -> PacedTaskRunReport {
         PacedTaskRunReport {
             target_ops_per_s: target,
             achieved_ops_per_s: achieved,
-            successful_ops_per_s: achieved,
+            successful_ops_per_s: successful,
             total_tasks: 10,
             completed_tasks: 10,
             failed_tasks,
@@ -156,6 +182,19 @@ mod tests {
     }
 
     #[test]
+    fn stops_when_successful_ratio_is_low_even_if_achieved_is_high() {
+        let policy = ThroughputSweepPolicy::paper_default(Some(100.0));
+        let decision = policy.decide_after(1, &report_with_success(100.0, 90.0, 40.0, 2));
+
+        assert_eq!(
+            decision,
+            SweepDecision::Stop {
+                reason: SweepStopReason::Saturated
+            }
+        );
+    }
+
+    #[test]
     fn continues_above_half_target() {
         let policy = ThroughputSweepPolicy::paper_default(Some(100.0));
         let decision = policy.decide_after(1, &report(100.0, 80.0, 0));
@@ -169,8 +208,22 @@ mod tests {
     }
 
     #[test]
-    fn stops_on_failures_when_enabled() {
+    fn continues_on_failures_by_default() {
         let policy = ThroughputSweepPolicy::paper_default(Some(100.0));
+        let decision = policy.decide_after(1, &report(100.0, 100.0, 1));
+
+        assert_eq!(
+            decision,
+            SweepDecision::Continue {
+                next_ops_per_s: 200.0
+            }
+        );
+    }
+
+    #[test]
+    fn stops_on_failures_when_enabled() {
+        let mut policy = ThroughputSweepPolicy::paper_default(Some(100.0));
+        policy.stop_on_failure = true;
         let decision = policy.decide_after(1, &report(100.0, 100.0, 1));
 
         assert_eq!(

@@ -87,11 +87,7 @@ async fn run_datapoint(
     target_ops_per_s: f64,
 ) -> Result<PutDatapointOutcome, String> {
     let resource_id = common::unique_resource_id(&experiment, instance);
-    let resource_dir = instance
-        .work_dir
-        .join("runs")
-        .join(common::sanitize_path_part(&experiment.run.run_id))
-        .join(&resource_id);
+    let resource_dir = instance.work_dir.join("runs").join(&resource_id);
     tokio::fs::create_dir_all(&resource_dir)
         .await
         .map_err(|err| {

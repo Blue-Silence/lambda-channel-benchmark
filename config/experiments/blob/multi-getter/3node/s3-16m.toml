@@ -1,31 +1,31 @@
 [run]
-run_id = "blob-multi-getter-smoke-3node-s3-32b"
+run_id = "blob-multi-getter-3node-s3-16m"
 workload = "blob.multi_getter"
-description = "Smoke test aggregate S3 multi-getter read throughput on one source plus two getters."
-output_dir = "out/blob-multi-getter-smoke-3node-s3-32b"
+description = "Measure aggregate S3 multi-getter read throughput for 16MiB objects on one source plus two getters."
+output_dir = "out/blob-multi-getter-3node-s3-16m"
 seed = 1
 
 [coordination]
 rpc_timeout_ms = 60000
-barrier_timeout_ms = 120000
+barrier_timeout_ms = 600000
 cleanup_timeout_ms = 30000
 force_reset_on_start = true
 
 [benchmark]
 backend = "s3"
 operations = 1
-concurrency = 8
-object_size_bytes = 32
+concurrency = 16
+object_size_bytes = 16777216
 warmup_operations = 0
-duration_seconds = 5
+duration_seconds = 10
 repetitions = 1
 
 [throughput_sweep]
-points_ops_per_s = [8.0]
+points_ops_per_s = [10, 20, 40, 80, 160, 320, 640]
 
 [lambda_channel]
 metadata_backend = "inmemory"
-channel_id_prefix = "lcbench-blob-multiget-smoke-s3-32b"
+channel_id_prefix = "lcbench-blob-multi-getter-3node-s3-16m"
 consume_mode = "competitive"
 
 [p2p]
@@ -41,7 +41,7 @@ non_abortable_task_workers = 16
 
 [env]
 LC_BENCH_S3_BUCKET_PREFIX = "lcbench-blob-multiget"
-LC_BENCH_S3_KEY_PREFIX = "blob-multi-getter-smoke-3node-s3-32b"
+LC_BENCH_S3_KEY_PREFIX = "blob-multi-getter-3node-s3-16m"
 
 [[participants]]
 instance_id = "node-0"

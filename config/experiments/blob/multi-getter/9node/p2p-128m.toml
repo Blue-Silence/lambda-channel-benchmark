@@ -6,8 +6,8 @@ output_dir = "out/blob-multi-getter-p2p-128m"
 seed = 1
 
 [coordination]
-rpc_timeout_ms = 5000
-barrier_timeout_ms = 600000
+rpc_timeout_ms = 60000
+barrier_timeout_ms = 1200000
 cleanup_timeout_ms = 30000
 force_reset_on_start = true
 
@@ -17,11 +17,11 @@ operations = 1
 concurrency = 16
 object_size_bytes = 134217728
 warmup_operations = 0
-duration_seconds = 10
+duration_seconds = 60
 repetitions = 1
 
 [throughput_sweep]
-points_ops_per_s = [0.8, 2.0, 4.0, 8.0, 16.0]
+points_ops_per_s = [1, 2, 4, 8, 16, 32, 64]
 
 [lambda_channel]
 metadata_backend = "inmemory"

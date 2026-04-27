@@ -12,7 +12,20 @@ pub(super) async fn run_datapoint(
 ) -> Result<MetadataDatapointOutcome, String> {
     let resource_id = common::unique_resource_id(experiment, instance);
     let channel_id = common::channel_id(experiment, &resource_id);
-    let store = common::create_metadata_store(instance, experiment, &resource_id).await?;
+    let resource_dir = common::create_resource_dir(instance, &resource_id).await?;
+    let mut store = match common::create_metadata_store(instance, experiment, &resource_id).await {
+        Ok(store) => store,
+        Err(err) => {
+            let _ = common::cleanup_resources(vec![common::MetadataCleanupResource::LocalDir(
+                resource_dir,
+            )])
+            .await;
+            return Err(err);
+        }
+    };
+    store
+        .cleanup
+        .push(common::MetadataCleanupResource::LocalDir(resource_dir));
     let result = execute(
         instance,
         experiment,

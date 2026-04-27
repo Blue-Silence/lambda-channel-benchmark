@@ -143,7 +143,9 @@ Currently implemented direct primitives:
 - `init_metadata_store`, `init_sender`, `init_receiver`: initialize the
   channel-related state slots for upcoming sender/receiver experiments.
 - `put_blob_batch`: accepts a blob put operation and returns a peer-generated
-  `req_id`; the final return value is available through `poll_request`.
+  `req_id`; the final return value is available through `poll_request`. Batch
+  puts use bounded concurrency for independent payload uploads so setup does
+  not introduce artificial serial bottlenecks.
 - `get_blob_batch`: accepts a blob get operation and returns a peer-generated
   `req_id`; the final return value is available through `poll_request`.
 - `poll_request`: returns the status and final return value for one submitted

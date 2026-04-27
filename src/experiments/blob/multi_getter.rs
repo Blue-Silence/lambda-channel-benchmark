@@ -10,6 +10,7 @@ use crate::blob_store_factory::unique_resource_id;
 use crate::config::{ExperimentSpec, InstanceConfig, InstancesConfig};
 use crate::driver::latency::LatencySummary;
 use crate::driver::paced::PacedTaskRunReport;
+use crate::driver::sweep::{SweepDecision, SweepStopReason, ThroughputSweepPolicy};
 use crate::experiments::blob::control::{
     begin_on_target, init_blob_store_on_target_with_request, prepare_blob_get_append_on_target,
     prepare_blob_get_begin_on_target, prepare_blob_get_finish_on_target, put_blob_batch_on_target,
@@ -47,23 +48,35 @@ pub(super) async fn run(
         return Err("blob.multi_getter requires at least one getter participant".to_string());
     }
 
+    let policy = sweep_policy(&experiment)?;
+    let target_rates = target_rates(&experiment, &policy)?;
     let mut datapoints = Vec::new();
-    for (index, overall_rate) in target_rates(&experiment)?.into_iter().enumerate() {
-        datapoints.push(
-            run_datapoint(
-                instance,
-                runtime,
-                instances,
-                &experiment,
-                &backend,
-                &source_id,
-                &getter_ids,
-                duration_seconds,
-                overall_rate,
-                index,
-            )
-            .await?,
+    let mut stop_reason = SweepStopReason::MaxPoints;
+    for (index, overall_rate) in target_rates.into_iter().enumerate() {
+        let datapoint = run_datapoint(
+            instance,
+            runtime,
+            instances,
+            &experiment,
+            &backend,
+            &source_id,
+            &getter_ids,
+            duration_seconds,
+            overall_rate,
+            index,
+        )
+        .await?;
+        let decision = policy.decide_after_metrics(
+            datapoints.len() + 1,
+            datapoint.paced.target_ops_per_s,
+            datapoint.paced.successful_ops_per_s,
+            datapoint.paced.failed_tasks,
         );
+        datapoints.push(datapoint);
+        if let SweepDecision::Stop { reason } = decision {
+            stop_reason = reason;
+            break;
+        }
     }
 
     let report = MultiGetterReport {
@@ -79,7 +92,7 @@ pub(super) async fn run(
         getter_count: getter_ids.len(),
         source_instance_id: source_id,
         getter_instance_ids: getter_ids,
-        stop_reason: "max_points".to_string(),
+        stop_reason,
         datapoints,
     };
     serde_json::to_string(&report).map_err(|err| format!("failed to serialize report: {err}"))
@@ -131,6 +144,7 @@ async fn run_datapoint(
     )
     .await?;
 
+    let preload_put_concurrency = preload_put_concurrency(experiment)?;
     let put_started = std::time::Instant::now();
     let source_put = put_blob_batch_on_target(
         instances,
@@ -142,6 +156,7 @@ async fn run_datapoint(
             run_id: run_id.clone(),
             count: working_set_size,
             object_size_bytes: experiment.benchmark.object_size_bytes,
+            max_in_flight: preload_put_concurrency,
         },
     )
     .await?;
@@ -252,6 +267,9 @@ async fn run_datapoint(
     }
 
     let aggregate = aggregate_getters(overall_rate, &per_getter, &getter_failures);
+    for getter in &mut per_getter {
+        getter.paced.samples.clear();
+    }
     Ok(MultiGetterDatapointReport {
         run_id,
         workload: experiment.run.workload.clone(),
@@ -277,6 +295,7 @@ async fn run_datapoint(
         per_getter_target_ops_per_s: per_getter_rate,
         aggregate_target_ops_per_s: overall_rate,
         preload_put_ms,
+        preload_put_concurrency: preload_put_concurrency as u64,
         preload_put_ops_per_s: if preload_put_ms > 0.0 {
             working_set_size as f64 / (preload_put_ms / 1000.0)
         } else {
@@ -320,14 +339,55 @@ fn getter_ids(experiment: &ExperimentSpec, source_id: &str) -> Result<Vec<String
         .collect())
 }
 
-fn target_rates(experiment: &ExperimentSpec) -> Result<Vec<f64>, String> {
+fn sweep_policy(experiment: &ExperimentSpec) -> Result<ThroughputSweepPolicy, String> {
+    let mut policy = ThroughputSweepPolicy::paper_default(experiment.benchmark.offered_rate_per_s);
+    let sweep = &experiment.throughput_sweep;
+    if let Some(value) = sweep.start_ops_per_s {
+        policy.start_ops_per_s = value;
+    }
+    if let Some(value) = sweep.step_multiplier {
+        policy.step_multiplier = value;
+    }
+    if let Some(value) = sweep.max_ops_per_s {
+        policy.max_ops_per_s = value;
+    }
+    if let Some(value) = sweep.max_points {
+        policy.max_points = value;
+    }
+    if let Some(value) = sweep.saturation_achieved_ratio {
+        policy.saturation_achieved_ratio = value;
+    }
+    if let Some(value) = sweep.stop_on_failure {
+        policy.stop_on_failure = value;
+    }
+    policy.validate()?;
+    Ok(policy)
+}
+
+fn target_rates(
+    experiment: &ExperimentSpec,
+    policy: &ThroughputSweepPolicy,
+) -> Result<Vec<f64>, String> {
     if !experiment.throughput_sweep.points_ops_per_s.is_empty() {
         return Ok(experiment.throughput_sweep.points_ops_per_s.clone());
     }
     if let Some(rate) = experiment.benchmark.offered_rate_per_s {
         return Ok(vec![rate]);
     }
-    Err("blob.multi_getter requires benchmark.offered_rate_per_s or throughput_sweep.points_ops_per_s".to_string())
+    let mut rates = Vec::with_capacity(policy.max_points);
+    let mut rate = policy.start_ops_per_s;
+    for _ in 0..policy.max_points {
+        if rate > policy.max_ops_per_s {
+            break;
+        }
+        rates.push(rate);
+        rate *= policy.step_multiplier;
+    }
+    if rates.is_empty() {
+        Err("blob.multi_getter throughput sweep generated no target rates".to_string())
+    } else {
+        Ok(rates)
+    }
 }
 
 fn operations_for_rate(rate: f64, duration_seconds: f64) -> Result<usize, String> {
@@ -339,6 +399,27 @@ fn operations_for_rate(rate: f64, duration_seconds: f64) -> Result<usize, String
         return Err("rate * duration is too large for this platform".to_string());
     }
     Ok(operations as usize)
+}
+
+fn preload_put_concurrency(experiment: &ExperimentSpec) -> Result<usize, String> {
+    let value = experiment
+        .env
+        .get("LC_BENCH_BLOB_PRELOAD_CONCURRENCY")
+        .or_else(|| {
+            experiment
+                .env
+                .get("LC_BENCH_BLOB_MULTI_GETTER_PRELOAD_CONCURRENCY")
+        })
+        .map(|raw| {
+            raw.parse::<usize>()
+                .map_err(|err| format!("invalid blob preload concurrency {raw:?}: {err}"))
+        })
+        .transpose()?
+        .unwrap_or(experiment.benchmark.concurrency);
+    if value == 0 {
+        return Err("blob preload concurrency must be greater than zero".to_string());
+    }
+    Ok(value)
 }
 
 fn future_start_unix_ns(delay: Duration) -> u64 {
@@ -414,7 +495,7 @@ struct MultiGetterReport {
     getter_count: usize,
     source_instance_id: String,
     getter_instance_ids: Vec<String>,
-    stop_reason: String,
+    stop_reason: SweepStopReason,
     datapoints: Vec<MultiGetterDatapointReport>,
 }
 
@@ -444,6 +525,7 @@ struct MultiGetterDatapointReport {
     per_getter_target_ops_per_s: f64,
     aggregate_target_ops_per_s: f64,
     preload_put_ms: f64,
+    preload_put_concurrency: u64,
     preload_put_ops_per_s: f64,
     store: BTreeMap<String, String>,
     paced: AggregatePacedSummary,

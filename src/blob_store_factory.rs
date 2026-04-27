@@ -51,7 +51,7 @@ async fn create_local_file_store(
 ) -> Result<CreatedBlobStore, String> {
     let root_dir = options
         .root_dir
-        .unwrap_or_else(|| options.run_dir.join("blob-store"));
+        .unwrap_or_else(|| options.run_dir.join("blob-store").join(options.resource_id));
     tokio::fs::create_dir_all(&root_dir).await.map_err(|err| {
         format!(
             "failed to create local blob store root {}: {err}",
@@ -169,9 +169,12 @@ async fn create_p2p_store(
     )?
     .unwrap_or(false);
 
-    let cache_dir = options
-        .root_dir
-        .unwrap_or_else(|| options.run_dir.join("blob-store-p2p-cache"));
+    let cache_dir = options.root_dir.unwrap_or_else(|| {
+        options
+            .run_dir
+            .join("blob-store-p2p-cache")
+            .join(options.resource_id)
+    });
     tokio::fs::create_dir_all(&cache_dir).await.map_err(|err| {
         format!(
             "failed to create p2p cache dir {}: {err}",

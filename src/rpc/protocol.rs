@@ -115,6 +115,7 @@ pub struct PutBlobBatchRequest {
     pub run_id: String,
     pub count: usize,
     pub object_size_bytes: u64,
+    pub max_in_flight: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
