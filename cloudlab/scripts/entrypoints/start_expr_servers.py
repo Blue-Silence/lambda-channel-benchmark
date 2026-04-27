@@ -66,6 +66,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=CONFIG_FILE,
         help=f"cloudlab config file, default: {CONFIG_FILE}",
     )
+    parser.add_argument(
+        "--remote-instances-file",
+        default=None,
+        help="override [runtime] remote_instances_file for this start",
+    )
     return parser.parse_args(argv)
 
 
@@ -209,6 +214,10 @@ def main(argv: list[str] | None = None) -> StartResult:
     args = parse_args(argv)
     config_path = args.config.expanduser().resolve()
     cfg = read_config(config_path)
+    if args.remote_instances_file:
+        if not cfg.has_section("runtime"):
+            cfg.add_section("runtime")
+        cfg["runtime"]["remote_instances_file"] = args.remote_instances_file
 
     nodes_file = project_path(cfg["paths"].get("nodes_file"))
     nodes = read_nodes(nodes_file)

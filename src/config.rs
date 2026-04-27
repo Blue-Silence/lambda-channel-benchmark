@@ -73,6 +73,8 @@ pub struct BenchmarkConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ThroughputSweepConfig {
     #[serde(default)]
+    pub points_ops_per_s: Vec<f64>,
+    #[serde(default)]
     pub start_ops_per_s: Option<f64>,
     #[serde(default)]
     pub step_multiplier: Option<f64>,
@@ -274,6 +276,14 @@ impl ExperimentSpec {
 
 impl ThroughputSweepConfig {
     fn validate(&self) -> Result<(), String> {
+        for value in &self.points_ops_per_s {
+            if !value.is_finite() || *value <= 0.0 {
+                return Err(
+                    "throughput_sweep.points_ops_per_s values must be finite positive numbers"
+                        .to_string(),
+                );
+            }
+        }
         if self
             .start_ops_per_s
             .is_some_and(|value| !value.is_finite() || value <= 0.0)

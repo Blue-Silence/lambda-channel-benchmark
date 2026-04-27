@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub(crate) struct LatencySummary {
+pub struct LatencySummary {
     pub(crate) count: usize,
     pub(crate) min_ms: f64,
     pub(crate) mean_ms: f64,

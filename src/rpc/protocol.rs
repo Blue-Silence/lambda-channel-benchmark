@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::ExperimentSpec;
+use crate::driver::paced::PacedTaskRunReport;
 
 #[tarpc::service]
 pub trait NodeRpc {
@@ -13,6 +14,7 @@ pub trait NodeRpc {
     async fn init_receiver(request: InitReceiverRequest) -> ExprActionResponse;
     async fn put_blob_batch(request: PutBlobBatchRequest) -> AcceptedResponse;
     async fn get_blob_batch(request: GetBlobBatchRequest) -> AcceptedResponse;
+    async fn get_blob_paced(request: PacedBlobGetRequest) -> AcceptedResponse;
     async fn poll_expr(request: PollExprRequest) -> PollExprResponse;
     async fn poll_request(request: PollRequestRequest) -> PollRequestResponse;
     async fn reset_expr(request: ResetExprRequest) -> ExprActionResponse;
@@ -53,6 +55,9 @@ pub struct InitBlobStoreRequest {
     pub backend: String,
     pub root_dir: Option<String>,
     pub force_reinit: bool,
+    pub experiment: Option<ExperimentSpec>,
+    pub resource_id: Option<String>,
+    pub create_remote_resources: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -131,6 +136,24 @@ pub struct BlobGetResult {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PacedBlobGetRequest {
+    pub run_id: String,
+    pub refs: Vec<serde_json::Value>,
+    pub target_ops_per_s: f64,
+    pub max_in_flight: usize,
+    pub start_after_unix_ns: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PacedBlobGetResult {
+    pub count: usize,
+    pub total_bytes: u64,
+    pub elapsed_ms: f64,
+    pub materialized_dir: String,
+    pub paced: PacedTaskRunReport,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PollRequestRequest {
     pub run_id: String,
     pub req_id: String,
@@ -159,6 +182,7 @@ pub enum RequestStatus {
 pub enum RequestResult {
     BlobPut(BlobPutResult),
     BlobGet(BlobGetResult),
+    PacedBlobGet(PacedBlobGetResult),
     Experiment(ExperimentRunResult),
 }
 

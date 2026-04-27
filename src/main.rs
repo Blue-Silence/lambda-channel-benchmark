@@ -1,3 +1,4 @@
+mod blob_store_factory;
 mod cli;
 mod config;
 mod driver;

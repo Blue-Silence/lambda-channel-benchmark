@@ -1,5 +1,6 @@
 mod control;
 mod get_materialize;
+mod multi_getter;
 mod p2p_peer_fetch;
 mod put;
 
@@ -28,6 +29,7 @@ pub(crate) async fn run(
         "blob.p2p_peer_fetch" => {
             p2p_peer_fetch::run(instance, runtime, instances, experiment).await
         }
+        "blob.multi_getter" => multi_getter::run(instance, runtime, instances, experiment).await,
         "blob.persist_upload" | "blob.fallback_fetch" => Err(format!(
             "{} direct orchestration is not implemented yet; add persist/cache reset primitives first",
             experiment.run.workload

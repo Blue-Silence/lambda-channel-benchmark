@@ -150,6 +150,18 @@ const EXPERIMENT_CSV_HEADER: &[&str] = &[
     "metadata_missing_count",
     "metadata_eof_count",
     "failure_messages",
+    "source_instance_id",
+    "getter_count",
+    "getter_instance_ids",
+    "operations_per_getter",
+    "working_set_size",
+    "per_getter_target_ops_per_s",
+    "aggregate_target_ops_per_s",
+    "refs_distribution",
+    "getter_reuse_policy",
+    "cross_getter_reuse",
+    "preload_put_ms",
+    "preload_put_ops_per_s",
 ];
 
 pub fn append_experiment_csv(path: &Path, report_json: &str) -> Result<usize, String> {
@@ -200,7 +212,7 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
             .get("counters")
             .unwrap_or(&serde_json::Value::Null);
         rows.push(vec![
-            "lambda-channel-benchmark/datapoint-v2".to_string(),
+            "lambda-channel-benchmark/datapoint-v3".to_string(),
             cell(report.get("run_id")),
             cell(report.get("workload")),
             cell(report.get("backend")),
@@ -271,6 +283,30 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
             cell(counters.get("missing_count")),
             cell(counters.get("eof_count")),
             failure_messages_cell(paced.get("failure_messages")),
+            cell(
+                datapoint
+                    .get("source_instance_id")
+                    .or_else(|| report.get("source_instance_id")),
+            ),
+            cell(
+                datapoint
+                    .get("getter_count")
+                    .or_else(|| report.get("getter_count")),
+            ),
+            string_array_cell(
+                datapoint
+                    .get("getter_instance_ids")
+                    .or_else(|| report.get("getter_instance_ids")),
+            ),
+            cell(datapoint.get("operations_per_getter")),
+            cell(datapoint.get("working_set_size")),
+            cell(datapoint.get("per_getter_target_ops_per_s")),
+            cell(datapoint.get("aggregate_target_ops_per_s")),
+            cell(datapoint.get("refs_distribution")),
+            cell(datapoint.get("getter_reuse_policy")),
+            cell(datapoint.get("cross_getter_reuse")),
+            cell(datapoint.get("preload_put_ms")),
+            cell(datapoint.get("preload_put_ops_per_s")),
         ]);
     }
     Ok(rows)
@@ -293,7 +329,7 @@ fn csv_needs_header_or_validate(path: &Path) -> Result<bool, String> {
                 Ok(false)
             } else {
                 Err(format!(
-                    "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v2 schema",
+                    "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v3 schema",
                     path.display()
                 ))
             }
@@ -331,6 +367,19 @@ fn failure_messages_cell(value: Option<&serde_json::Value>) -> String {
         .and_then(serde_json::Value::as_array)
         .map(|messages| {
             messages
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join("|")
+        })
+        .unwrap_or_default()
+}
+
+fn string_array_cell(value: Option<&serde_json::Value>) -> String {
+    value
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
                 .iter()
                 .filter_map(serde_json::Value::as_str)
                 .collect::<Vec<_>>()
@@ -421,7 +470,7 @@ mod tests {
         assert_eq!(rows[0].len(), EXPERIMENT_CSV_HEADER.len());
         assert_eq!(
             cell(&rows[0], "schema"),
-            "lambda-channel-benchmark/datapoint-v2"
+            "lambda-channel-benchmark/datapoint-v3"
         );
         assert_eq!(cell(&rows[0], "workload"), "metadata.append");
         assert_eq!(cell(&rows[0], "operation"), "put_elem");

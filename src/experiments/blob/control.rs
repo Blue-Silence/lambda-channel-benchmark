@@ -9,11 +9,13 @@ use crate::config::{ExperimentSpec, InstanceConfig, InstancesConfig};
 use crate::rpc::client::{connect_node, ensure_finished_result};
 use crate::rpc::protocol::{
     AcceptedResponse, BeginExprRequest, BlobGetResult, BlobPutResult, GetBlobBatchRequest,
-    InitBlobStoreRequest, PollRequestRequest, PollRequestResponse, PutBlobBatchRequest,
-    RequestResult, ResetExprRequest, RunBlobGetRequest, RunBlobGetResponse,
+    InitBlobStoreRequest, PacedBlobGetRequest, PacedBlobGetResult, PollRequestRequest,
+    PollRequestResponse, PutBlobBatchRequest, RequestResult, ResetExprRequest, RunBlobGetRequest,
+    RunBlobGetResponse,
 };
 use crate::rpc::server::blob::{
     init_blob_store_on_node, submit_blob_get_batch_on_node, submit_blob_put_batch_on_node,
+    submit_paced_blob_get_on_node,
 };
 use crate::rpc::server::state::{
     begin_expr_on_node, poll_request_on_node, reset_expr_on_node, response_to_result,
@@ -91,6 +93,9 @@ pub(crate) async fn run_blob_get_on_node(
             backend: request.blob_store_backend.clone(),
             root_dir: None,
             force_reinit: false,
+            experiment: None,
+            resource_id: None,
+            create_remote_resources: false,
         },
     )
     .await?;
@@ -181,33 +186,40 @@ pub(super) async fn init_blob_store_on_target(
     run_id: &str,
     backend: &str,
 ) -> Result<(), String> {
+    init_blob_store_on_target_with_request(
+        instances,
+        instance,
+        runtime,
+        target_id,
+        InitBlobStoreRequest {
+            run_id: run_id.to_string(),
+            backend: backend.to_string(),
+            root_dir: None,
+            force_reinit: false,
+            experiment: None,
+            resource_id: None,
+            create_remote_resources: false,
+        },
+    )
+    .await
+}
+
+pub(super) async fn init_blob_store_on_target_with_request(
+    instances: &InstancesConfig,
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    target_id: &str,
+    request: InitBlobStoreRequest,
+) -> Result<(), String> {
     if target_id == instance.id {
-        init_blob_store_on_node(
-            instance,
-            runtime,
-            InitBlobStoreRequest {
-                run_id: run_id.to_string(),
-                backend: backend.to_string(),
-                root_dir: None,
-                force_reinit: false,
-            },
-        )
-        .await
+        init_blob_store_on_node(instance, runtime, request).await
     } else {
         let target = instances
             .find_instance(target_id)
             .ok_or_else(|| format!("unknown target instance id: {target_id}"))?;
         let response = connect_node(target)
             .await?
-            .init_blob_store(
-                context::current(),
-                InitBlobStoreRequest {
-                    run_id: run_id.to_string(),
-                    backend: backend.to_string(),
-                    root_dir: None,
-                    force_reinit: false,
-                },
-            )
+            .init_blob_store(context::current(), request)
             .await
             .map_err(|err| format!("init_blob_store RPC failed for {}: {err}", target.id))?;
         response_to_result(response)
@@ -288,6 +300,45 @@ pub(super) async fn get_blob_batch_on_target(
         RequestResult::BlobGet(result) => Ok(result),
         other => Err(format!(
             "target {target_id} returned unexpected result for blob get: {other:?}"
+        )),
+    }
+}
+
+pub(super) async fn paced_blob_get_on_target(
+    instances: &InstancesConfig,
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    target_id: &str,
+    barrier_timeout_ms: u64,
+    request: PacedBlobGetRequest,
+) -> Result<PacedBlobGetResult, String> {
+    let run_id = request.run_id.clone();
+    let accepted = if target_id == instance.id {
+        submit_paced_blob_get_on_node(&instance.id, runtime.clone(), request).await
+    } else {
+        let target = instances
+            .find_instance(target_id)
+            .ok_or_else(|| format!("unknown target instance id: {target_id}"))?;
+        connect_node(target)
+            .await?
+            .get_blob_paced(context::current(), request)
+            .await
+            .map_err(|err| format!("get_blob_paced RPC failed for {}: {err}", target.id))?
+    };
+    let result = wait_for_request_result_on_target(
+        instances,
+        instance,
+        runtime,
+        target_id,
+        &run_id,
+        barrier_timeout_ms,
+        accepted,
+    )
+    .await?;
+    match result {
+        RequestResult::PacedBlobGet(result) => Ok(result),
+        other => Err(format!(
+            "target {target_id} returned unexpected result for paced blob get: {other:?}"
         )),
     }
 }

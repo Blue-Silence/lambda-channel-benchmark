@@ -1,0 +1,66 @@
+[registry]
+name = "cloudlab-c6620-9"
+description = "CloudLab c6620 fixed topology: node-0 source plus node-1..node-8 getters."
+
+[[instances]]
+id = "node-0"
+rpc_addr = "node-0:19000"
+p2p_advertise_endpoint = "http://node-0:18080"
+work_dir = ".bench/instances/node-0"
+capabilities = ["p2p", "source", "holder"]
+
+[[instances]]
+id = "node-1"
+rpc_addr = "node-1:19000"
+p2p_advertise_endpoint = "http://node-1:18080"
+work_dir = ".bench/instances/node-1"
+capabilities = ["p2p", "getter"]
+
+[[instances]]
+id = "node-2"
+rpc_addr = "node-2:19000"
+p2p_advertise_endpoint = "http://node-2:18080"
+work_dir = ".bench/instances/node-2"
+capabilities = ["p2p", "getter"]
+
+[[instances]]
+id = "node-3"
+rpc_addr = "node-3:19000"
+p2p_advertise_endpoint = "http://node-3:18080"
+work_dir = ".bench/instances/node-3"
+capabilities = ["p2p", "getter"]
+
+[[instances]]
+id = "node-4"
+rpc_addr = "node-4:19000"
+p2p_advertise_endpoint = "http://node-4:18080"
+work_dir = ".bench/instances/node-4"
+capabilities = ["p2p", "getter"]
+
+[[instances]]
+id = "node-5"
+rpc_addr = "node-5:19000"
+p2p_advertise_endpoint = "http://node-5:18080"
+work_dir = ".bench/instances/node-5"
+capabilities = ["p2p", "getter"]
+
+[[instances]]
+id = "node-6"
+rpc_addr = "node-6:19000"
+p2p_advertise_endpoint = "http://node-6:18080"
+work_dir = ".bench/instances/node-6"
+capabilities = ["p2p", "getter"]
+
+[[instances]]
+id = "node-7"
+rpc_addr = "node-7:19000"
+p2p_advertise_endpoint = "http://node-7:18080"
+work_dir = ".bench/instances/node-7"
+capabilities = ["p2p", "getter"]
+
+[[instances]]
+id = "node-8"
+rpc_addr = "node-8:19000"
+p2p_advertise_endpoint = "http://node-8:18080"
+work_dir = ".bench/instances/node-8"
+capabilities = ["p2p", "getter"]

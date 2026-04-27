@@ -31,6 +31,7 @@ import gc_aws_resources
 import kill_expr_servers
 import package as package_entrypoint
 import record_single
+import refresh_nodes
 import run_proxy_experiment
 import start_expr_servers
 from nodes import read_nodes
@@ -103,6 +104,16 @@ def default_rpc_url(args: argparse.Namespace) -> str:
     cfg.read(args.cloudlab_config)
     nodes = read_nodes(local_path(cfg["paths"].get("nodes_file")))
     return f"{nodes[0].host}:19000"
+
+
+def refresh_recorded_nodes(args: argparse.Namespace) -> None:
+    command = ["--config", args.allocate_config]
+    if args.refresh_experiment_id:
+        command += ["--experiment-id", args.refresh_experiment_id]
+    log("refresh nodes from CloudLab manifest")
+    result = refresh_nodes.main(command)
+    log(f"refreshed nodes: {len(result.nodes)}")
+    log(f"nodes file: {result.nodes_file}")
 
 
 def check_node_rpc_health(args: argparse.Namespace) -> None:
@@ -189,6 +200,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--skip-allocate",
         action="store_true",
         help="use the existing nodes file instead of creating a new CloudLab experiment",
+    )
+    parser.add_argument(
+        "--refresh-experiment-id",
+        default=os.environ.get("CLOUDLAB_EXPERIMENT_ID"),
+        help="experiment id/name passed to refresh_nodes.py when --skip-allocate is used",
     )
     parser.add_argument(
         "--skip-deploy",
@@ -279,6 +295,7 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
         log(f"nodes file: {allocate_result.nodes_file}")
     else:
         log("skip allocation; using existing nodes file")
+        refresh_recorded_nodes(args)
 
     # 3. Wait/check readiness, then deploy and start the long-lived node daemon.
     ready_args = [

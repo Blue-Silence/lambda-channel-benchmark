@@ -25,7 +25,7 @@ pub(crate) struct PacedTaskRunConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct PacedTaskRunReport {
+pub struct PacedTaskRunReport {
     pub(crate) target_ops_per_s: f64,
     pub(crate) achieved_ops_per_s: f64,
     pub(crate) successful_ops_per_s: f64,
@@ -55,7 +55,7 @@ impl PacedTaskRunReport {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct PacedTaskSample {
+pub struct PacedTaskSample {
     pub(crate) index: usize,
     pub(crate) ok: bool,
     pub(crate) offered_latency_ms: f64,
@@ -64,7 +64,7 @@ pub(crate) struct PacedTaskSample {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct PacedTaskFailure {
+pub struct PacedTaskFailure {
     pub(crate) index: usize,
     pub(crate) message: String,
 }

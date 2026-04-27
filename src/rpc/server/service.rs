@@ -8,12 +8,13 @@ use crate::rpc::protocol::{
     AcceptedResponse, BeginExprRequest, ExperimentRunResult, ExprActionResponse,
     GetBlobBatchRequest, HealthRequest, HealthResponse, InitBlobStoreRequest,
     InitMetadataStoreRequest, InitReceiverRequest, InitSenderRequest, NodeDescription, NodeRpc,
-    PollExprRequest, PollExprResponse, PollRequestRequest, PollRequestResponse,
-    PutBlobBatchRequest, RequestResult, ResetExprRequest, RunBlobGetRequest, RunBlobGetResponse,
-    RunExperimentRequest,
+    PacedBlobGetRequest, PollExprRequest, PollExprResponse, PollRequestRequest,
+    PollRequestResponse, PutBlobBatchRequest, RequestResult, ResetExprRequest, RunBlobGetRequest,
+    RunBlobGetResponse, RunExperimentRequest,
 };
 use crate::rpc::server::blob::{
     init_blob_store_on_node, submit_blob_get_batch_on_node, submit_blob_put_batch_on_node,
+    submit_paced_blob_get_on_node,
 };
 use crate::rpc::server::state::{
     action_response, begin_expr_on_node, create_request_on_node, fail_request_on_node,
@@ -140,6 +141,14 @@ impl NodeRpc for NodeRpcService {
         request: GetBlobBatchRequest,
     ) -> AcceptedResponse {
         submit_blob_get_batch_on_node(&self.instance.id, self.runtime.clone(), request).await
+    }
+
+    async fn get_blob_paced(
+        self,
+        _: context::Context,
+        request: PacedBlobGetRequest,
+    ) -> AcceptedResponse {
+        submit_paced_blob_get_on_node(&self.instance.id, self.runtime.clone(), request).await
     }
 
     async fn poll_expr(self, _: context::Context, request: PollExprRequest) -> PollExprResponse {

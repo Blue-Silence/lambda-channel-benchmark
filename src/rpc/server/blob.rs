@@ -2,16 +2,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use lambda_channel::blob_store_impl::local_file_blob_store::AsyncLocalFileBlobStore;
 use lambda_channel::blob_store_impl::{BlobRefHandle, BlobStoreHandle};
 use lambda_channel::common::{NativeMap, NativeValue};
 use tokio::sync::Mutex;
+use tokio::time::{sleep_until, Duration, Instant as TokioInstant};
 
+use crate::blob_store_factory::{create_blob_store, BlobStoreCreateOptions};
 use crate::config::InstanceConfig;
+use crate::driver::paced::{boxed_task, run_paced_tasks, PacedTask, PacedTaskRunConfig};
 use crate::payload_file::{create_timestamped_payload_file, PayloadFileSpec};
 use crate::rpc::protocol::{
     AcceptedResponse, BlobGetResult, BlobPutResult, GetBlobBatchRequest, InitBlobStoreRequest,
-    PutBlobBatchRequest, RequestResult,
+    PacedBlobGetRequest, PacedBlobGetResult, PutBlobBatchRequest, RequestResult,
 };
 use crate::rpc::server::state::{
     create_request_on_node, current_expr, current_expr_mut, fail_request_on_node,
@@ -40,43 +42,34 @@ pub(crate) async fn init_blob_store_on_node(
             .map_err(|err| format!("failed to close previous blob store: {err}"))?;
     }
 
-    let backend = request.backend.trim().to_ascii_lowercase();
-    let (root_dir, handle): (Option<String>, BlobStoreHandle) = match backend.as_str() {
-        "local-file" | "localfs" => {
-            let root_dir = request
-                .root_dir
-                .map(PathBuf::from)
-                .unwrap_or_else(|| run_dir.join("blob-store"));
-            tokio::fs::create_dir_all(&root_dir).await.map_err(|err| {
-                format!(
-                    "failed to create blob store root {}: {err}",
-                    root_dir.display()
-                )
-            })?;
-            let store = AsyncLocalFileBlobStore::new(path_to_string(&root_dir))
-                .await
-                .map_err(|err| format!("failed to create local file blob store: {err}"))?;
-            (
-                Some(path_to_string(&root_dir)),
-                Arc::new(store) as BlobStoreHandle,
-            )
-        }
-        "p2p" => {
-            return Err(format!(
-                "p2p blob store init is not implemented yet for node {}; this is the next primitive to wire",
-                instance.id
-            ))
-        }
-        other => return Err(format!("unsupported blob store backend: {other}")),
-    };
+    let resource_id = request
+        .resource_id
+        .clone()
+        .unwrap_or_else(|| request.run_id.clone());
+    let created = create_blob_store(BlobStoreCreateOptions {
+        instance,
+        experiment: request.experiment.as_ref(),
+        run_dir: &run_dir,
+        backend: &request.backend,
+        resource_id: &resource_id,
+        root_dir: request.root_dir.map(PathBuf::from),
+        create_remote_resources: request.create_remote_resources,
+    })
+    .await?;
 
     let mut runtime = runtime.lock().await;
     let current = current_expr_mut(&mut runtime, &request.run_id)?;
     current.blob_store = Some(BlobStoreResource {
-        backend,
-        root_dir,
-        handle,
+        backend: created.backend,
+        root_dir: created.root_dir,
+        handle: created.handle,
     });
+    put_artifact(
+        current,
+        "blob_store_details",
+        "blob_store_details",
+        serde_json::to_value(&created.details).unwrap_or(serde_json::Value::Null),
+    );
     current.phase = "blob_store_ready".to_string();
     runtime.generation += 1;
     Ok(())
@@ -148,6 +141,45 @@ pub(crate) async fn submit_blob_get_batch_on_node(
             Err(message) => {
                 if let Err(err) = fail_request_on_node(&runtime, &run_id, &req_id, message).await {
                     eprintln!("failed to fail blob get request {req_id}: {err}");
+                }
+            }
+        }
+    });
+
+    accepted
+}
+
+pub(crate) async fn submit_paced_blob_get_on_node(
+    instance_id: &str,
+    runtime: Arc<Mutex<NodeRuntimeState>>,
+    request: PacedBlobGetRequest,
+) -> AcceptedResponse {
+    let accepted =
+        create_request_on_node(instance_id, &runtime, &request.run_id, "blob-get-paced").await;
+    let Some(req_id) = accepted.req_id.clone() else {
+        return accepted;
+    };
+
+    tokio::spawn(async move {
+        let run_id = request.run_id.clone();
+        let started_at = Instant::now();
+        let result = paced_blob_get_on_node(&runtime, request).await;
+        match result {
+            Ok((materialized_dir, total_bytes, paced)) => {
+                let result = RequestResult::PacedBlobGet(PacedBlobGetResult {
+                    count: paced.completed_tasks,
+                    total_bytes,
+                    elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+                    materialized_dir,
+                    paced,
+                });
+                if let Err(err) = finish_request_on_node(&runtime, &run_id, &req_id, result).await {
+                    eprintln!("failed to finish paced blob get request {req_id}: {err}");
+                }
+            }
+            Err(message) => {
+                if let Err(err) = fail_request_on_node(&runtime, &run_id, &req_id, message).await {
+                    eprintln!("failed to fail paced blob get request {req_id}: {err}");
                 }
             }
         }
@@ -302,6 +334,78 @@ pub(crate) async fn get_blob_batch_on_node(
     Ok((paths, total_bytes))
 }
 
+pub(crate) async fn paced_blob_get_on_node(
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    request: PacedBlobGetRequest,
+) -> Result<(String, u64, crate::driver::paced::PacedTaskRunReport), String> {
+    if request.refs.is_empty() {
+        return Err("paced blob get requires at least one blob ref".to_string());
+    }
+    if !request.target_ops_per_s.is_finite() || request.target_ops_per_s <= 0.0 {
+        return Err("target_ops_per_s must be a finite positive number".to_string());
+    }
+    if request.max_in_flight == 0 {
+        return Err("max_in_flight must be greater than zero".to_string());
+    }
+
+    let (run_dir, store) = {
+        let runtime = runtime.lock().await;
+        let current = current_expr(&runtime, &request.run_id)?;
+        (
+            current.run_dir.clone(),
+            current
+                .blob_store
+                .as_ref()
+                .ok_or_else(|| "paced blob get requires initialized blob_store state".to_string())?
+                .handle
+                .clone(),
+        )
+    };
+    let output_dir = run_dir
+        .join("materialized")
+        .join(unique_batch_id("paced-get"));
+    tokio::fs::create_dir_all(&output_dir)
+        .await
+        .map_err(|err| {
+            format!(
+                "failed to create materialize output dir {}: {err}",
+                output_dir.display()
+            )
+        })?;
+
+    let refs = parse_blob_refs(&store, &request.refs)?;
+    if let Some(start_after_unix_ns) = request.start_after_unix_ns {
+        wait_until_unix_ns(start_after_unix_ns).await;
+    }
+
+    let tasks = build_get_tasks(store, refs, output_dir.clone());
+    let paced = run_paced_tasks(
+        tasks,
+        PacedTaskRunConfig {
+            target_ops_per_s: request.target_ops_per_s,
+            max_in_flight: request.max_in_flight,
+            pacer_core_id: None,
+        },
+    )
+    .await?;
+    let paths = materialized_paths(&output_dir, request.refs.len());
+    let total_bytes = sum_existing_file_sizes(&paths).await?;
+
+    let output_dir_string = path_to_string(&output_dir);
+    let mut runtime = runtime.lock().await;
+    let current = current_expr_mut(&mut runtime, &request.run_id)?;
+    put_artifact(
+        current,
+        "paced_materialized_dir",
+        "paced_materialized_dir",
+        serde_json::Value::String(output_dir_string.clone()),
+    );
+    put_metric(current, "blob_get_total_bytes", total_bytes as f64, "bytes");
+    current.phase = "blob_paced_get_finished".to_string();
+    runtime.generation += 1;
+    Ok((output_dir_string, total_bytes, paced))
+}
+
 fn blob_refs_to_json_values(refs: &[BlobRefHandle]) -> Result<Vec<serde_json::Value>, String> {
     refs.iter()
         .map(|reference| {
@@ -310,6 +414,49 @@ fn blob_refs_to_json_values(refs: &[BlobRefHandle]) -> Result<Vec<serde_json::Va
                 .map(native_map_to_json)
                 .map_err(|err| format!("failed to serialize blob ref: {err}"))
         })
+        .collect()
+}
+
+fn parse_blob_refs(
+    store: &BlobStoreHandle,
+    values: &[serde_json::Value],
+) -> Result<Vec<BlobRefHandle>, String> {
+    values
+        .iter()
+        .map(|value| {
+            let native_map = json_to_native_map(value)?;
+            store
+                .blob_ref_kind()
+                .try_parse(&native_map)
+                .map_err(|err| format!("failed to parse blob ref: {err}"))
+        })
+        .collect()
+}
+
+fn build_get_tasks(
+    store: BlobStoreHandle,
+    refs: Vec<BlobRefHandle>,
+    output_dir: PathBuf,
+) -> Vec<PacedTask> {
+    refs.into_iter()
+        .enumerate()
+        .map(|(idx, reference)| {
+            let store = store.clone();
+            let dst = path_to_string(&output_dir.join(format!("materialized_{idx:08}.bin")));
+            boxed_task(async move {
+                store
+                    .get_file(reference.as_ref(), &dst, None)
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| format!("paced get failed for index {idx}: {err}"))
+            })
+        })
+        .collect()
+}
+
+fn materialized_paths(output_dir: &Path, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|idx| path_to_string(&output_dir.join(format!("materialized_{idx:08}.bin"))))
         .collect()
 }
 
@@ -324,6 +471,20 @@ async fn sum_file_sizes(paths: &[String]) -> Result<u64, String> {
     Ok(total)
 }
 
+async fn sum_existing_file_sizes(paths: &[String]) -> Result<u64, String> {
+    let mut total = 0_u64;
+    for path in paths {
+        match tokio::fs::metadata(path).await {
+            Ok(metadata) => {
+                total = total.saturating_add(metadata.len());
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("failed to stat {path}: {err}")),
+        }
+    }
+    Ok(total)
+}
+
 fn unique_batch_id(prefix: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -334,6 +495,18 @@ fn unique_batch_id(prefix: &str) -> String {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+async fn wait_until_unix_ns(start_after_unix_ns: u64) {
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or(0);
+    if start_after_unix_ns <= now_ns {
+        return;
+    }
+    let delta = Duration::from_nanos(start_after_unix_ns - now_ns);
+    sleep_until(TokioInstant::now() + delta).await;
 }
 
 fn native_map_to_json(map: NativeMap) -> serde_json::Value {
