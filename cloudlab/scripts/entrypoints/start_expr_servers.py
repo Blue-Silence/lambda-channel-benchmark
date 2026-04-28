@@ -146,7 +146,9 @@ def remote_node_cmd(
 
     inner = (
         f"cd {shlex.quote(remote_repo_dir)}; "
-        f"nohup {command} > {shlex.quote(remote_expr_log)} 2>&1 < /dev/null & "
+        "ulimit -n \"$(ulimit -Hn)\"; "
+        f"echo '[start-expr] nofile limit: '$(ulimit -n) > {shlex.quote(remote_expr_log)}; "
+        f"nohup {command} >> {shlex.quote(remote_expr_log)} 2>&1 < /dev/null & "
         f"echo $! > {shlex.quote(remote_pid_file)}"
     )
     return f"bash -lc {shlex.quote(inner)}"

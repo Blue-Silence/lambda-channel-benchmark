@@ -14,7 +14,7 @@ force_reset_on_start = true
 [benchmark]
 operations = 1000
 duration_seconds = 20.0
-concurrency = 4
+concurrency = 32
 object_size_bytes = 1073741824
 warmup_operations = 1
 repetitions = 1

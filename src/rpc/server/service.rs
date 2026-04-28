@@ -5,13 +5,14 @@ use tokio::sync::Mutex;
 use crate::config::{experiment_summary, InstanceConfig, InstancesConfig};
 use crate::experiments::{run_blob_get_on_node, run_experiment_on_node};
 use crate::rpc::protocol::{
-    AcceptedResponse, BeginExprRequest, ExperimentRunResult, ExprActionResponse,
-    GetBlobBatchRequest, HealthRequest, HealthResponse, InitBlobStoreRequest,
-    InitMetadataStoreRequest, InitReceiverRequest, InitSenderRequest, NodeDescription, NodeRpc,
-    PacedBlobGetRequest, PollExprRequest, PollExprResponse, PollRequestRequest,
-    PollRequestResponse, PrepareBlobGetAppendRequest, PrepareBlobGetBeginRequest,
-    PrepareBlobGetFinishRequest, PutBlobBatchRequest, RequestResult, ResetExprRequest,
-    RunBlobGetRequest, RunBlobGetResponse, RunExperimentRequest, StartPreparedBlobGetRequest,
+    AcceptedResponse, BeginExprRequest, BlobPutRefsChunkRequest, BlobPutRefsChunkResponse,
+    ExperimentRunResult, ExprActionResponse, GetBlobBatchRequest, HealthRequest, HealthResponse,
+    InitBlobStoreRequest, InitMetadataStoreRequest, InitReceiverRequest, InitSenderRequest,
+    NodeDescription, NodeRpc, PacedBlobGetRequest, PollExprRequest, PollExprResponse,
+    PollRequestRequest, PollRequestResponse, PrepareBlobGetAppendRequest,
+    PrepareBlobGetBeginRequest, PrepareBlobGetFinishRequest, PutBlobBatchRequest, RequestResult,
+    ResetExprRequest, RunBlobGetRequest, RunBlobGetResponse, RunExperimentRequest,
+    StartPreparedBlobGetRequest,
 };
 use crate::rpc::server::blob::{
     init_blob_store_on_node, prepare_blob_get_append_on_node, prepare_blob_get_begin_on_node,
@@ -19,10 +20,10 @@ use crate::rpc::server::blob::{
     submit_paced_blob_get_on_node, submit_prepared_blob_get_on_node,
 };
 use crate::rpc::server::state::{
-    action_response, begin_expr_on_node, create_request_on_node, fail_request_on_node,
-    finish_request_on_node, init_metadata_store_on_node, init_receiver_on_node,
-    init_sender_on_node, poll_expr_on_node, poll_request_on_node, reset_expr_on_node,
-    NodeRuntimeState,
+    action_response, begin_expr_on_node, blob_put_refs_chunk_on_node, create_request_on_node,
+    fail_request_on_node, finish_request_on_node, init_metadata_store_on_node,
+    init_receiver_on_node, init_sender_on_node, poll_expr_on_node, poll_request_on_node,
+    reset_expr_on_node, NodeRuntimeState,
 };
 
 #[derive(Clone)]
@@ -210,6 +211,14 @@ impl NodeRpc for NodeRpcService {
         request: PollRequestRequest,
     ) -> PollRequestResponse {
         poll_request_on_node(&self.instance.id, &self.runtime, request).await
+    }
+
+    async fn get_blob_put_refs_chunk(
+        self,
+        _: context::Context,
+        request: BlobPutRefsChunkRequest,
+    ) -> BlobPutRefsChunkResponse {
+        blob_put_refs_chunk_on_node(&self.instance.id, &self.runtime, request).await
     }
 
     async fn reset_expr(

@@ -23,6 +23,9 @@ use crate::rpc::server::state::{
     PreparedPacedBlobGet, StagedPacedBlobGet,
 };
 
+const BLOB_PUT_MAX_ATTEMPTS: usize = 5;
+const BLOB_PUT_RETRY_BASE_DELAY_MS: u64 = 50;
+
 pub(crate) async fn init_blob_store_on_node(
     instance: &InstanceConfig,
     runtime: &Arc<Mutex<NodeRuntimeState>>,
@@ -463,10 +466,7 @@ async fn put_generated_files_concurrent(
                     },
                 )
                 .await?;
-                let reference = store
-                    .put_file(&path_string)
-                    .await
-                    .map_err(|err| format!("failed to put payload {path_string}: {err}"))?;
+                let reference = put_file_with_retry(&store, &path_string).await?;
                 if cleanup_payloads_after_put {
                     tokio::fs::remove_file(&path).await.map_err(|err| {
                         format!(
@@ -502,6 +502,29 @@ async fn put_generated_files_concurrent(
         .map(|(index, path)| path.ok_or_else(|| format!("missing payload path for index {index}")))
         .collect::<Result<Vec<_>, _>>()?;
     Ok((refs, paths))
+}
+
+async fn put_file_with_retry(
+    store: &BlobStoreHandle,
+    path_string: &str,
+) -> Result<BlobRefHandle, String> {
+    let mut last_error = String::new();
+    for attempt in 1..=BLOB_PUT_MAX_ATTEMPTS {
+        match store.put_file(path_string).await {
+            Ok(reference) => return Ok(reference),
+            Err(err) => {
+                last_error = format!("{err}");
+                if attempt < BLOB_PUT_MAX_ATTEMPTS {
+                    let delay_ms =
+                        BLOB_PUT_RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << (attempt - 1));
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                }
+            }
+        }
+    }
+    Err(format!(
+        "failed to put payload {path_string} after {BLOB_PUT_MAX_ATTEMPTS} attempts: {last_error}"
+    ))
 }
 
 pub(crate) async fn get_blob_batch_on_node(

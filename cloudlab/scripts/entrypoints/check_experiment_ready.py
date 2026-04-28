@@ -37,6 +37,9 @@ from nodes import Node, read_nodes
 
 import refresh_nodes
 
+SSH_AUTH_ATTEMPTS = 3
+SSH_AUTH_RETRY_DELAY_SECONDS = 2.0
+
 
 DEFAULT_CLOUDLAB_CONFIG = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
 DEFAULT_ALLOCATE_CONFIG = CLOUDLAB_DIR / ".config" / "allocate.ini"
@@ -166,19 +169,30 @@ def check_ssh_auth(
         command.extend(["-i", str(project_path(ssh_key))])
     command.extend([f"{node.user}@{node.host}", "true"])
 
-    result = subprocess.run(
-        command,
-        cwd=str(PROJECT_ROOT),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-        timeout=max(2, timeout + 2),
-    )
-    if result.returncode == 0:
-        return True, "key-auth-ok"
-    detail = " ".join(result.stdout.strip().split())
-    return False, detail or f"ssh exited {result.returncode}"
+    last_detail = ""
+    for attempt in range(1, SSH_AUTH_ATTEMPTS + 1):
+        try:
+            result = subprocess.run(
+                command,
+                cwd=str(PROJECT_ROOT),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=max(2, timeout + 2),
+            )
+        except subprocess.TimeoutExpired:
+            last_detail = "ssh-auth-timeout"
+        else:
+            if result.returncode == 0:
+                return True, "key-auth-ok"
+            detail = " ".join(result.stdout.strip().split())
+            last_detail = detail or f"ssh exited {result.returncode}"
+
+        if attempt < SSH_AUTH_ATTEMPTS:
+            time.sleep(SSH_AUTH_RETRY_DELAY_SECONDS)
+
+    return False, f"{last_detail} after {SSH_AUTH_ATTEMPTS} attempts"
 
 
 def check_portal(

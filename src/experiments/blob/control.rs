@@ -8,11 +8,12 @@ use tokio::time::sleep;
 use crate::config::{ExperimentSpec, InstanceConfig, InstancesConfig};
 use crate::rpc::client::{connect_node, ensure_finished_result};
 use crate::rpc::protocol::{
-    AcceptedResponse, BeginExprRequest, BlobGetResult, BlobPutResult, GetBlobBatchRequest,
-    InitBlobStoreRequest, PacedBlobGetRequest, PacedBlobGetResult, PollRequestRequest,
-    PollRequestResponse, PrepareBlobGetAppendRequest, PrepareBlobGetBeginRequest,
-    PrepareBlobGetFinishRequest, PutBlobBatchRequest, RequestResult, ResetExprRequest,
-    RunBlobGetRequest, RunBlobGetResponse, StartPreparedBlobGetRequest,
+    AcceptedResponse, BeginExprRequest, BlobGetResult, BlobPutRefsChunkRequest, BlobPutResult,
+    GetBlobBatchRequest, InitBlobStoreRequest, PacedBlobGetRequest, PacedBlobGetResult,
+    PollRequestRequest, PollRequestResponse, PrepareBlobGetAppendRequest,
+    PrepareBlobGetBeginRequest, PrepareBlobGetFinishRequest, PutBlobBatchRequest, RequestResult,
+    RequestStatus, ResetExprRequest, RunBlobGetRequest, RunBlobGetResponse,
+    StartPreparedBlobGetRequest,
 };
 use crate::rpc::server::blob::{
     init_blob_store_on_node, submit_blob_get_batch_on_node, submit_blob_put_batch_on_node,
@@ -22,6 +23,9 @@ use crate::rpc::server::state::{
     begin_expr_on_node, poll_request_on_node, reset_expr_on_node, response_to_result,
     NodeRuntimeState,
 };
+
+const REQUEST_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const BLOB_REF_FETCH_CHUNK_SIZE: usize = 1024;
 
 pub(crate) struct BlobGetOutcome {
     pub(crate) prepared_count: usize,
@@ -265,6 +269,49 @@ pub(super) async fn put_blob_batch_on_target(
             "target {target_id} returned unexpected result for blob put: {other:?}"
         )),
     }
+}
+
+pub(super) async fn put_blob_batch_on_target_chunked_refs(
+    instances: &InstancesConfig,
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    target_id: &str,
+    barrier_timeout_ms: u64,
+    request: PutBlobBatchRequest,
+) -> Result<BlobPutResult, String> {
+    let run_id = request.run_id.clone();
+    let accepted = if target_id == instance.id {
+        submit_blob_put_batch_on_node(&instance.id, runtime.clone(), request).await
+    } else {
+        let target = instances
+            .find_instance(target_id)
+            .ok_or_else(|| format!("unknown target instance id: {target_id}"))?;
+        connect_node(target)
+            .await?
+            .put_blob_batch(context::current(), request)
+            .await
+            .map_err(|err| format!("put_blob_batch RPC failed for {}: {err}", target.id))?
+    };
+    let req_id = wait_for_request_finished_on_target(
+        instances,
+        instance,
+        runtime,
+        target_id,
+        &run_id,
+        barrier_timeout_ms,
+        accepted,
+    )
+    .await?;
+    fetch_blob_put_result_chunks_on_target(
+        instances,
+        instance,
+        runtime,
+        target_id,
+        &run_id,
+        &req_id,
+        BLOB_REF_FETCH_CHUNK_SIZE,
+    )
+    .await
 }
 
 pub(super) async fn get_blob_batch_on_target(
@@ -528,7 +575,7 @@ async fn wait_for_request_result_on_target(
     let deadline = Instant::now() + Duration::from_millis(barrier_timeout_ms);
 
     loop {
-        let response = poll_request_on_target(
+        let response = match poll_request_on_target(
             instances,
             instance,
             runtime,
@@ -536,9 +583,21 @@ async fn wait_for_request_result_on_target(
             PollRequestRequest {
                 run_id: run_id.to_string(),
                 req_id: req_id.clone(),
+                include_result: true,
             },
         )
-        .await?;
+        .await
+        {
+            Ok(response) => response,
+            Err(err) if is_transient_poll_error(&err) && Instant::now() < deadline => {
+                eprintln!(
+                    "transient poll_request failure for target {target_id} req_id={req_id}: {err}; retrying"
+                );
+                sleep(REQUEST_POLL_INTERVAL).await;
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
         if let Some(result) = ensure_finished_result(
             target_id,
             &req_id,
@@ -553,8 +612,192 @@ async fn wait_for_request_result_on_target(
                 "timed out waiting for target {target_id} req_id={req_id} after {barrier_timeout_ms} ms"
             ));
         }
-        sleep(Duration::from_millis(10)).await;
+        sleep(REQUEST_POLL_INTERVAL).await;
     }
+}
+
+async fn wait_for_request_finished_on_target(
+    instances: &InstancesConfig,
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    target_id: &str,
+    run_id: &str,
+    barrier_timeout_ms: u64,
+    accepted: AcceptedResponse,
+) -> Result<String, String> {
+    if !accepted.ok {
+        return Err(format!(
+            "target {target_id} rejected request: {}",
+            accepted.message
+        ));
+    }
+    let req_id = accepted
+        .req_id
+        .ok_or_else(|| format!("target {target_id} accepted request without req_id"))?;
+    let deadline = Instant::now() + Duration::from_millis(barrier_timeout_ms);
+
+    loop {
+        let response = match poll_request_on_target(
+            instances,
+            instance,
+            runtime,
+            target_id,
+            PollRequestRequest {
+                run_id: run_id.to_string(),
+                req_id: req_id.clone(),
+                include_result: false,
+            },
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) if is_transient_poll_error(&err) && Instant::now() < deadline => {
+                eprintln!(
+                    "transient poll_request failure for target {target_id} req_id={req_id}: {err}; retrying"
+                );
+                sleep(REQUEST_POLL_INTERVAL).await;
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
+
+        match response.status {
+            RequestStatus::Finished => return Ok(req_id),
+            RequestStatus::Failed => {
+                return Err(format!(
+                    "target {target_id} failed req_id={req_id}: {}",
+                    response.message
+                ))
+            }
+            RequestStatus::Missing => {
+                return Err(format!("target {target_id} does not know req_id={req_id}"))
+            }
+            RequestStatus::Running => {}
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for target {target_id} req_id={req_id} after {barrier_timeout_ms} ms"
+            ));
+        }
+        sleep(REQUEST_POLL_INTERVAL).await;
+    }
+}
+
+async fn fetch_blob_put_result_chunks_on_target(
+    instances: &InstancesConfig,
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    target_id: &str,
+    run_id: &str,
+    req_id: &str,
+    chunk_size: usize,
+) -> Result<BlobPutResult, String> {
+    let mut refs = Vec::new();
+    let mut offset = 0usize;
+
+    let (count, total_bytes, elapsed_ms) = loop {
+        let response = blob_put_refs_chunk_on_target(
+            instances,
+            instance,
+            runtime,
+            target_id,
+            BlobPutRefsChunkRequest {
+                run_id: run_id.to_string(),
+                req_id: req_id.to_string(),
+                offset,
+                limit: chunk_size,
+            },
+        )
+        .await?;
+        if !response.ok {
+            return Err(format!(
+                "target {target_id} rejected blob-put refs chunk req_id={req_id}: {}",
+                response.message
+            ));
+        }
+        match response.status {
+            RequestStatus::Finished => {}
+            RequestStatus::Failed => {
+                return Err(format!(
+                    "target {target_id} failed blob-put req_id={req_id}: {}",
+                    response.message
+                ))
+            }
+            RequestStatus::Missing => {
+                return Err(format!("target {target_id} does not know req_id={req_id}"))
+            }
+            RequestStatus::Running => {
+                return Err(format!(
+                "target {target_id} blob-put req_id={req_id} is still running while fetching refs"
+            ))
+            }
+        }
+
+        let expected_offset = refs.len();
+        if response.offset != expected_offset {
+            return Err(format!(
+                "target {target_id} returned blob-put refs offset {}, expected {expected_offset}",
+                response.offset
+            ));
+        }
+        let summary = (response.count, response.total_bytes, response.elapsed_ms);
+        refs.extend(response.refs);
+        offset = refs.len();
+        if !response.has_more {
+            break summary;
+        }
+    };
+
+    if refs.len() != count {
+        return Err(format!(
+            "target {target_id} returned {} blob-put refs, expected {count}",
+            refs.len()
+        ));
+    }
+    Ok(BlobPutResult {
+        count,
+        total_bytes,
+        elapsed_ms,
+        refs,
+    })
+}
+
+async fn blob_put_refs_chunk_on_target(
+    instances: &InstancesConfig,
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    target_id: &str,
+    request: BlobPutRefsChunkRequest,
+) -> Result<crate::rpc::protocol::BlobPutRefsChunkResponse, String> {
+    if target_id == instance.id {
+        Ok(
+            crate::rpc::server::state::blob_put_refs_chunk_on_node(&instance.id, runtime, request)
+                .await,
+        )
+    } else {
+        let target = instances
+            .find_instance(target_id)
+            .ok_or_else(|| format!("unknown target instance id: {target_id}"))?;
+        connect_node(target)
+            .await?
+            .get_blob_put_refs_chunk(context::current(), request)
+            .await
+            .map_err(|err| {
+                format!(
+                    "get_blob_put_refs_chunk RPC failed for {}: {err}",
+                    target.id
+                )
+            })
+    }
+}
+
+fn is_transient_poll_error(err: &str) -> bool {
+    err.contains("poll_request RPC failed")
+        || err.contains("failed to connect")
+        || err.contains("channel was disconnected")
+        || err.contains("deadline")
+        || err.contains("Connection timed out")
 }
 
 async fn poll_request_on_target(

@@ -100,6 +100,23 @@ def remote_build_cmd(
     return f"bash -lc {shlex.quote(inner)}"
 
 
+def prepare_local_disk_cmd(
+    *,
+    script_path: str,
+    mount_point: str,
+    min_size_gb: float,
+) -> str:
+    args = [
+        "python3",
+        script_path,
+        "--mount-point",
+        mount_point,
+        "--min-size-gb",
+        str(min_size_gb),
+    ]
+    return " ".join(shlex.quote(arg) for arg in args)
+
+
 def deploy_node(node: Node, cfg: configparser.ConfigParser, package_file: Path) -> None:
     deploy = cfg["deploy"]
     paths = cfg["paths"]
@@ -107,12 +124,17 @@ def deploy_node(node: Node, cfg: configparser.ConfigParser, package_file: Path) 
     remote_tmp_dir = deploy.get("remote_tmp_dir", "/tmp/cloudlab-deploy")
     remote_repo_dir = deploy.get("remote_repo_dir", "/local/cloudlab-workspace")
     remote_build_log = deploy.get("remote_build_log", "/local/cloudlab-build.log")
+    local_mount_point = deploy.get("local_mount_point", "/local")
 
     clean_remote = deploy.getboolean("clean_remote", fallback=True)
     skip_apt = deploy.getboolean("skip_apt", fallback=False)
+    prepare_local_disk = deploy.getboolean("prepare_local_disk", fallback=True)
+    local_disk_min_size_gb = deploy.getfloat("local_disk_min_size_gb", fallback=10.0)
 
     local_log_dir = project_path(paths.get("local_log_dir", "cloudlab/.generated/logs"))
     remote_package = f"{remote_tmp_dir}/{package_file.name}"
+    remote_prepare_disk = f"{remote_tmp_dir}/prepare_local_disk.py"
+    prepare_disk_script = ROOT / "cloudlab" / "scripts" / "remote" / "prepare_local_disk.py"
 
     log(f"{node.name}: connect {node.user}@{node.host}:{node.port}")
     conn = connect(node=node, cfg=cfg, project_path=project_path)
@@ -120,6 +142,17 @@ def deploy_node(node: Node, cfg: configparser.ConfigParser, package_file: Path) 
     try:
         log(f"{node.name}: prepare remote dirs")
         conn.run(f"mkdir -p {shlex.quote(remote_tmp_dir)}")
+
+        if prepare_local_disk:
+            log(f"{node.name}: prepare /local scratch disk")
+            conn.put(str(prepare_disk_script), remote=remote_prepare_disk)
+            conn.run(
+                prepare_local_disk_cmd(
+                    script_path=remote_prepare_disk,
+                    mount_point=local_mount_point,
+                    min_size_gb=local_disk_min_size_gb,
+                )
+            )
 
         if clean_remote:
             conn.run(f"rm -rf {shlex.quote(remote_repo_dir)}")

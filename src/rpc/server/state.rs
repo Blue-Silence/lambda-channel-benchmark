@@ -12,10 +12,11 @@ use tokio::sync::Mutex;
 use crate::blob_store_factory::unique_resource_id;
 use crate::config::InstanceConfig;
 use crate::rpc::protocol::{
-    AcceptedResponse, Artifact, BeginExprRequest, ExprActionResponse, InitMetadataStoreRequest,
-    InitReceiverRequest, InitSenderRequest, MetricRecord, PollExprRequest, PollExprResponse,
-    PollRequestRequest, PollRequestResponse, RequestResult, RequestStatus, RequestSummary,
-    ResetExprRequest, ResourceSummary,
+    AcceptedResponse, Artifact, BeginExprRequest, BlobPutRefsChunkRequest,
+    BlobPutRefsChunkResponse, ExprActionResponse, InitMetadataStoreRequest, InitReceiverRequest,
+    InitSenderRequest, MetricRecord, PollExprRequest, PollExprResponse, PollRequestRequest,
+    PollRequestResponse, RequestResult, RequestStatus, RequestSummary, ResetExprRequest,
+    ResourceSummary,
 };
 
 #[derive(Clone)]
@@ -514,11 +515,111 @@ pub(crate) async fn poll_request_on_node(
         run_id: Some(record.run_id.clone()),
         req_id: record.req_id.clone(),
         status: record.status.clone(),
-        result: record.result.clone(),
+        result: if request.include_result {
+            record.result.clone()
+        } else {
+            None
+        },
         message: record
             .error
             .clone()
             .unwrap_or_else(|| format!("{} request is {:?}", record.kind, record.status)),
+    }
+}
+
+pub(crate) async fn blob_put_refs_chunk_on_node(
+    instance_id: &str,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    request: BlobPutRefsChunkRequest,
+) -> BlobPutRefsChunkResponse {
+    if request.limit == 0 {
+        return BlobPutRefsChunkResponse {
+            ok: false,
+            instance_id: instance_id.to_string(),
+            run_id: Some(request.run_id),
+            req_id: request.req_id,
+            status: RequestStatus::Missing,
+            count: 0,
+            total_bytes: 0,
+            elapsed_ms: 0.0,
+            offset: request.offset,
+            refs: Vec::new(),
+            has_more: false,
+            message: "refs chunk limit must be greater than zero".to_string(),
+        };
+    }
+
+    let runtime = runtime.lock().await;
+    let Some(record) = runtime
+        .requests
+        .get(&(request.run_id.clone(), request.req_id.clone()))
+    else {
+        return BlobPutRefsChunkResponse {
+            ok: true,
+            instance_id: instance_id.to_string(),
+            run_id: Some(request.run_id),
+            req_id: request.req_id,
+            status: RequestStatus::Missing,
+            count: 0,
+            total_bytes: 0,
+            elapsed_ms: 0.0,
+            offset: request.offset,
+            refs: Vec::new(),
+            has_more: false,
+            message: "unknown request id".to_string(),
+        };
+    };
+
+    match (&record.status, &record.result) {
+        (RequestStatus::Finished, Some(RequestResult::BlobPut(result))) => {
+            let offset = request.offset.min(result.refs.len());
+            let end = offset.saturating_add(request.limit).min(result.refs.len());
+            BlobPutRefsChunkResponse {
+                ok: true,
+                instance_id: instance_id.to_string(),
+                run_id: Some(record.run_id.clone()),
+                req_id: record.req_id.clone(),
+                status: record.status.clone(),
+                count: result.count,
+                total_bytes: result.total_bytes,
+                elapsed_ms: result.elapsed_ms,
+                offset,
+                refs: result.refs[offset..end].to_vec(),
+                has_more: end < result.refs.len(),
+                message: format!("blob put refs chunk {offset}..{end}/{}", result.refs.len()),
+            }
+        }
+        (RequestStatus::Finished, Some(other)) => BlobPutRefsChunkResponse {
+            ok: false,
+            instance_id: instance_id.to_string(),
+            run_id: Some(record.run_id.clone()),
+            req_id: record.req_id.clone(),
+            status: record.status.clone(),
+            count: 0,
+            total_bytes: 0,
+            elapsed_ms: 0.0,
+            offset: request.offset,
+            refs: Vec::new(),
+            has_more: false,
+            message: format!("request result is not BlobPut: {other:?}"),
+        },
+        _ => BlobPutRefsChunkResponse {
+            ok: true,
+            instance_id: instance_id.to_string(),
+            run_id: Some(record.run_id.clone()),
+            req_id: record.req_id.clone(),
+            status: record.status.clone(),
+            count: 0,
+            total_bytes: 0,
+            elapsed_ms: 0.0,
+            offset: request.offset,
+            refs: Vec::new(),
+            has_more: false,
+            message: record
+                .error
+                .clone()
+                .unwrap_or_else(|| format!("{} request is {:?}", record.kind, record.status)),
+        },
     }
 }
 

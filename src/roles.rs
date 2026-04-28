@@ -105,6 +105,7 @@ pub async fn run_proxy(experiment: ExperimentSpec, options: ProxyOptions) -> Res
         submit_experiment_and_wait(&client, experiment, &options.rpc_addr, print_result_message)
             .await?;
     if let Some(csv_output) = options.csv_output.as_ref() {
+        print_experiment_failure_summary(&result.message)?;
         let rows = output::append_experiment_csv(csv_output, &result.message)?;
         println!(
             "appended {} datapoint rows to {}",
@@ -256,6 +257,7 @@ async fn wait_for_submitted_experiment(
                 PollRequestRequest {
                     run_id: accepted.run_id.clone(),
                     req_id: req_id.clone(),
+                    include_result: true,
                 },
             )
             .await
@@ -324,6 +326,117 @@ fn rpc_context(timeout: Duration) -> context::Context {
     let mut ctx = context::current();
     ctx.deadline = Instant::now() + timeout;
     ctx
+}
+
+fn print_experiment_failure_summary(report_json: &str) -> Result<(), String> {
+    const MAX_FAILURE_SAMPLES: usize = 16;
+
+    let report: serde_json::Value = serde_json::from_str(report_json)
+        .map_err(|err| format!("experiment result is not valid JSON: {err}"))?;
+    let datapoints = report
+        .get("datapoints")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "experiment result JSON missing datapoints[]".to_string())?;
+
+    let run_id = string_value(report.get("run_id")).unwrap_or("-");
+    let workload = string_value(report.get("workload")).unwrap_or("-");
+    let backend = string_value(report.get("backend")).unwrap_or("-");
+    let mut printed_header = false;
+
+    for (index, datapoint) in datapoints.iter().enumerate() {
+        let paced = datapoint.get("paced").unwrap_or(&serde_json::Value::Null);
+        let failed_tasks = paced
+            .get("failed_tasks")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let failures = paced
+            .get("failures")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let failure_messages = paced
+            .get("failure_messages")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+
+        if failed_tasks == 0 && failures.is_empty() && failure_messages.is_empty() {
+            continue;
+        }
+
+        if !printed_header {
+            println!(
+                "experiment failure summary run_id={} workload={} backend={}",
+                run_id, workload, backend
+            );
+            printed_header = true;
+        }
+
+        let datapoint_index = datapoint
+            .get("datapoint_index")
+            .and_then(serde_json::Value::as_u64)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| index.to_string());
+        let resource_id = string_value(datapoint.get("resource_id")).unwrap_or("-");
+        let target_ops = paced
+            .get("target_ops_per_s")
+            .and_then(serde_json::Value::as_f64)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "  datapoint={} resource_id={} target_ops_per_s={} failed_tasks={} failure_samples={}",
+            datapoint_index,
+            resource_id,
+            target_ops,
+            failed_tasks,
+            failures.len().max(failure_messages.len())
+        );
+
+        for failure in failures.iter().take(MAX_FAILURE_SAMPLES) {
+            let index = failure
+                .get("index")
+                .and_then(serde_json::Value::as_u64)
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let message = string_value(failure.get("message")).unwrap_or("-");
+            println!("    failure index={}: {}", index, one_line(message, 800));
+        }
+        for message in failure_messages.iter().take(MAX_FAILURE_SAMPLES) {
+            if let Some(message) = string_value(Some(message)) {
+                println!("    failure: {}", one_line(message, 800));
+            }
+        }
+
+        let omitted = failures
+            .len()
+            .saturating_sub(MAX_FAILURE_SAMPLES)
+            .max(failure_messages.len().saturating_sub(MAX_FAILURE_SAMPLES));
+        if omitted > 0 {
+            println!("    ... omitted {} additional failure sample(s)", omitted);
+        }
+    }
+
+    Ok(())
+}
+
+fn string_value(value: Option<&serde_json::Value>) -> Option<&str> {
+    value.and_then(serde_json::Value::as_str)
+}
+
+fn one_line(message: &str, max_chars: usize) -> String {
+    let mut output = String::new();
+    for ch in message.chars() {
+        let ch = match ch {
+            '\n' | '\r' | '\t' => ' ',
+            ch => ch,
+        };
+        if output.chars().count() >= max_chars {
+            output.push_str("...");
+            break;
+        }
+        output.push(ch);
+    }
+    output
 }
 
 fn resolve_node_instance_id(

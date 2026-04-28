@@ -1,0 +1,58 @@
+[run]
+run_id = "blob-single-getter-3node-p2p-16m"
+workload = "blob.single_getter"
+description = "Measure P2P single-getter materialize throughput for 16m objects with one getter plus two putters."
+output_dir = "out/blob-single-getter-3node-p2p-16m"
+seed = 1
+
+[coordination]
+rpc_timeout_ms = 60000
+barrier_timeout_ms = 1800000
+cleanup_timeout_ms = 30000
+force_reset_on_start = true
+
+[benchmark]
+backend = "p2p"
+operations = 1
+concurrency = 256
+object_size_bytes = 16777216
+warmup_operations = 0
+duration_seconds = 30
+repetitions = 1
+
+[throughput_sweep]
+points_ops_per_s = [10, 20, 40, 80, 160, 320, 640]
+
+[lambda_channel]
+metadata_backend = "inmemory"
+channel_id_prefix = "lcbench-blob-single-getter-3node-p2p-16m"
+consume_mode = "competitive"
+
+[p2p]
+tracker_backend = "dynamodb"
+cache_root = ".bench/cache"
+chunk_server_bind_host = "0.0.0.0"
+chunk_server_port_base = 18080
+chunk_server_runtime_worker_threads = 4
+enable_accel = true
+accel_probability = 0.9
+persist_backend = "none"
+non_abortable_task_workers = 16
+
+[env]
+LC_BENCH_P2P_TRACKER_TABLE_META_PREFIX = "lcbench_blob_singleget_meta"
+LC_BENCH_P2P_TRACKER_TABLE_HOLDERS_PREFIX = "lcbench_blob_singleget_holders"
+LC_BENCH_P2P_CREATE_TRACKER_TABLES = "true"
+LC_BENCH_BLOB_SINGLE_GETTER_PRELOAD_CONCURRENCY = "64"
+
+[[participants]]
+instance_id = "node-0"
+label = "getter"
+
+[[participants]]
+instance_id = "node-1"
+label = "putter"
+
+[[participants]]
+instance_id = "node-2"
+label = "putter"

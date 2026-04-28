@@ -21,6 +21,7 @@ pub trait NodeRpc {
     async fn start_prepared_blob_get(request: StartPreparedBlobGetRequest) -> AcceptedResponse;
     async fn poll_expr(request: PollExprRequest) -> PollExprResponse;
     async fn poll_request(request: PollRequestRequest) -> PollRequestResponse;
+    async fn get_blob_put_refs_chunk(request: BlobPutRefsChunkRequest) -> BlobPutRefsChunkResponse;
     async fn reset_expr(request: ResetExprRequest) -> ExprActionResponse;
     async fn submit_experiment(request: RunExperimentRequest) -> AcceptedResponse;
     async fn run_blob_get(request: RunBlobGetRequest) -> RunBlobGetResponse;
@@ -192,6 +193,7 @@ pub struct PacedBlobGetResult {
 pub struct PollRequestRequest {
     pub run_id: String,
     pub req_id: String,
+    pub include_result: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -219,6 +221,30 @@ pub enum RequestResult {
     BlobGet(BlobGetResult),
     PacedBlobGet(PacedBlobGetResult),
     Experiment(ExperimentRunResult),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlobPutRefsChunkRequest {
+    pub run_id: String,
+    pub req_id: String,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlobPutRefsChunkResponse {
+    pub ok: bool,
+    pub instance_id: String,
+    pub run_id: Option<String>,
+    pub req_id: String,
+    pub status: RequestStatus,
+    pub count: usize,
+    pub total_bytes: u64,
+    pub elapsed_ms: f64,
+    pub offset: usize,
+    pub refs: Vec<serde_json::Value>,
+    pub has_more: bool,
+    pub message: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

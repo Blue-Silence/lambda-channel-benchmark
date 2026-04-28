@@ -134,6 +134,12 @@ python cloudlab/scripts/entrypoints/check_experiment_ready.py
 This is read-only. It checks the local `nodes.ini`, optional Portal status, DNS,
 and whether each node returns an SSH protocol banner on port 22.
 
+During deploy, `deploy.py` prepares CloudLab scratch storage before extracting
+the benchmark bundle. With `prepare_local_disk = true`, it mounts an existing
+`LC_BENCH_LOCAL` filesystem at `/local`, or formats only a whole disk that has
+no partitions, no filesystem, and no mountpoint. If no safe candidate exists,
+it leaves the current `/local` layout unchanged.
+
 Stop all remote expr servers:
 
 ```bash

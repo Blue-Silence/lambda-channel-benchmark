@@ -78,6 +78,9 @@ DYNAMODB_TABLE_PREFIXES = [
 
 WORKFLOW_COLOR = "\033[1;36m"
 RESET_COLOR = "\033[0m"
+RPC_HEALTH_ATTEMPTS = 6
+RPC_HEALTH_TIMEOUT_SECONDS = 20
+RPC_HEALTH_RETRY_DELAY_SECONDS = 5
 
 
 def log(message: str) -> None:
@@ -139,8 +142,28 @@ def refresh_recorded_nodes(args: argparse.Namespace) -> None:
 
 def check_node_rpc_health(args: argparse.Namespace) -> None:
     rpc_url = default_rpc_url(args)
-    log(f"check node RPC health: {rpc_url}")
-    run([args.lc_bench, "health", "--url", rpc_url])
+    command = [args.lc_bench, "health", "--url", rpc_url]
+    for attempt in range(1, RPC_HEALTH_ATTEMPTS + 1):
+        log(f"check node RPC health: {rpc_url} (attempt {attempt}/{RPC_HEALTH_ATTEMPTS})")
+        try:
+            result = subprocess.run(
+                command,
+                cwd=ROOT,
+                check=False,
+                timeout=RPC_HEALTH_TIMEOUT_SECONDS,
+            )
+            if result.returncode == 0:
+                return
+            failure = f"exit code {result.returncode}"
+        except subprocess.TimeoutExpired:
+            failure = f"timed out after {RPC_HEALTH_TIMEOUT_SECONDS}s"
+        if attempt == RPC_HEALTH_ATTEMPTS:
+            raise RuntimeError(f"node RPC health failed after {RPC_HEALTH_ATTEMPTS} attempts: {failure}")
+        log(
+            "node RPC health failed "
+            f"({failure}); retrying in {RPC_HEALTH_RETRY_DELAY_SECONDS}s"
+        )
+        time.sleep(RPC_HEALTH_RETRY_DELAY_SECONDS)
 
 
 def settle_after_experiment(args: argparse.Namespace) -> None:

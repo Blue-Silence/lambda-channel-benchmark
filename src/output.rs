@@ -165,6 +165,10 @@ const EXPERIMENT_CSV_HEADER: &[&str] = &[
     "preload_put_ms",
     "preload_put_concurrency",
     "preload_put_ops_per_s",
+    "getter_instance_id",
+    "putter_count",
+    "putter_instance_ids",
+    "expected_working_set_bytes",
 ];
 
 pub fn append_experiment_csv(path: &Path, report_json: &str) -> Result<usize, String> {
@@ -215,7 +219,7 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
             .get("counters")
             .unwrap_or(&serde_json::Value::Null);
         rows.push(vec![
-            "lambda-channel-benchmark/datapoint-v5".to_string(),
+            "lambda-channel-benchmark/datapoint-v6".to_string(),
             cell(report.get("run_id")),
             cell(report.get("workload")),
             cell(report.get("backend")),
@@ -317,6 +321,22 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
             cell(datapoint.get("preload_put_ms")),
             cell(datapoint.get("preload_put_concurrency")),
             cell(datapoint.get("preload_put_ops_per_s")),
+            cell(
+                datapoint
+                    .get("getter_instance_id")
+                    .or_else(|| report.get("getter_instance_id")),
+            ),
+            cell(
+                datapoint
+                    .get("putter_count")
+                    .or_else(|| report.get("putter_count")),
+            ),
+            string_array_cell(
+                datapoint
+                    .get("putter_instance_ids")
+                    .or_else(|| report.get("putter_instance_ids")),
+            ),
+            cell(datapoint.get("expected_working_set_bytes")),
         ]);
     }
     Ok(rows)
@@ -339,7 +359,7 @@ fn csv_needs_header_or_validate(path: &Path) -> Result<bool, String> {
                 Ok(false)
             } else {
                 Err(format!(
-                    "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v5 schema",
+                    "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v6 schema",
                     path.display()
                 ))
             }
@@ -480,7 +500,7 @@ mod tests {
         assert_eq!(rows[0].len(), EXPERIMENT_CSV_HEADER.len());
         assert_eq!(
             cell(&rows[0], "schema"),
-            "lambda-channel-benchmark/datapoint-v5"
+            "lambda-channel-benchmark/datapoint-v6"
         );
         assert_eq!(cell(&rows[0], "workload"), "metadata.append");
         assert_eq!(cell(&rows[0], "operation"), "put_elem");
@@ -618,6 +638,53 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(cell(&rows[0], "stop_reason"), "");
         assert_eq!(cell(&rows[1], "stop_reason"), "saturated");
+    }
+
+    #[test]
+    fn flattens_single_getter_columns() {
+        let report = r#"{
+            "run_id": "blob-single-getter-s3-32b",
+            "workload": "blob.single_getter",
+            "instance_id": "node-0",
+            "backend": "s3",
+            "operations_per_point": 1,
+            "warmup_operations_per_point": 0,
+            "concurrency": 64,
+            "object_size_bytes": 32,
+            "getter_instance_id": "node-0",
+            "putter_count": 2,
+            "putter_instance_ids": ["node-1", "node-2"],
+            "stop_reason": "max_points",
+            "datapoints": [{
+                "resource_id": "res-1",
+                "operations": 1000,
+                "working_set_size": 1000,
+                "refs_distribution": "even-round-robin",
+                "expected_working_set_bytes": 32000,
+                "store": {},
+                "paced": {
+                    "target_ops_per_s": 100.0,
+                    "achieved_ops_per_s": 99.0,
+                    "successful_ops_per_s": 99.0,
+                    "total_tasks": 1000,
+                    "completed_tasks": 1000,
+                    "failed_tasks": 0,
+                    "wall_time_ms": 10100.0,
+                    "offered_latency": {},
+                    "service_latency": {},
+                    "schedule_lag": {},
+                    "failure_messages": []
+                }
+            }]
+        }"#;
+
+        let rows = experiment_csv_rows(report).unwrap();
+        assert_eq!(cell(&rows[0], "workload"), "blob.single_getter");
+        assert_eq!(cell(&rows[0], "getter_instance_id"), "node-0");
+        assert_eq!(cell(&rows[0], "putter_count"), "2");
+        assert_eq!(cell(&rows[0], "putter_instance_ids"), "node-1|node-2");
+        assert_eq!(cell(&rows[0], "expected_working_set_bytes"), "32000");
+        assert_eq!(cell(&rows[0], "refs_distribution"), "even-round-robin");
     }
 
     fn cell<'a>(row: &'a [String], column: &str) -> &'a str {
