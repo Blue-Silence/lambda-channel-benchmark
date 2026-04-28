@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use lambda_channel::blob_store_impl::{BlobRefHandle, BlobStoreHandle};
+use lambda_channel::blob_store_impl::{BlobGetOptions, BlobRefHandle, BlobStoreHandle};
 use lambda_channel::common::{NativeMap, NativeValue};
 use tokio::sync::Mutex;
 use tokio::time::{sleep_until, Duration, Instant as TokioInstant};
@@ -570,7 +570,12 @@ pub(crate) async fn get_blob_batch_on_node(
         let dst = output_dir.join(format!("materialized_{idx:06}.bin"));
         paths.push(
             store
-                .get_file(reference.as_ref(), &path_to_string(&dst), None)
+                .get_file(
+                    reference.as_ref(),
+                    &path_to_string(&dst),
+                    None,
+                    BlobGetOptions::default(),
+                )
                 .await
                 .map_err(|err| format!("failed to materialize blob {idx}: {err}"))?,
         );
@@ -767,7 +772,7 @@ fn build_get_tasks(
             let dst = path_to_string(&output_dir.join(format!("materialized_{idx:08}.bin")));
             boxed_task(async move {
                 store
-                    .get_file(reference.as_ref(), &dst, None)
+                    .get_file(reference.as_ref(), &dst, None, BlobGetOptions::default())
                     .await
                     .map(|_| ())
                     .map_err(|err| format!("paced get failed for index {idx}: {err}"))

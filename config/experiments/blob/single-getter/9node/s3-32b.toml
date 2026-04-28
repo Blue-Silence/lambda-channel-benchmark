@@ -42,7 +42,7 @@ non_abortable_task_workers = 16
 [env]
 LC_BENCH_S3_BUCKET_PREFIX = "lcbench-blob-singleget"
 LC_BENCH_S3_KEY_PREFIX = "blob-single-getter-s3-32b"
-LC_BENCH_BLOB_SINGLE_GETTER_PRELOAD_CONCURRENCY = "256"
+LC_BENCH_BLOB_SINGLE_GETTER_PRELOAD_CONCURRENCY = "64"
 
 [[participants]]
 instance_id = "node-0"

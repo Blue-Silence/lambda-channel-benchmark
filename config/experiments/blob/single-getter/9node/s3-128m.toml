@@ -17,7 +17,7 @@ operations = 1
 concurrency = 256
 object_size_bytes = 134217728
 warmup_operations = 0
-duration_seconds = 120
+duration_seconds = 20
 repetitions = 1
 
 [throughput_sweep]
@@ -42,7 +42,7 @@ non_abortable_task_workers = 16
 [env]
 LC_BENCH_S3_BUCKET_PREFIX = "lcbench-blob-singleget"
 LC_BENCH_S3_KEY_PREFIX = "blob-single-getter-s3-128m"
-LC_BENCH_BLOB_SINGLE_GETTER_PRELOAD_CONCURRENCY = "32"
+LC_BENCH_BLOB_SINGLE_GETTER_PRELOAD_CONCURRENCY = "8"
 
 [[participants]]
 instance_id = "node-0"

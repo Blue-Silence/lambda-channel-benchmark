@@ -17,7 +17,7 @@ operations = 1
 concurrency = 32
 object_size_bytes = 1073741824
 warmup_operations = 0
-duration_seconds = 120
+duration_seconds = 20
 repetitions = 1
 
 [throughput_sweep]
