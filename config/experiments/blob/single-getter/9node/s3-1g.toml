@@ -14,14 +14,15 @@ force_reset_on_start = true
 [benchmark]
 backend = "s3"
 operations = 1
-concurrency = 32
+concurrency = 8192
 object_size_bytes = 1073741824
 warmup_operations = 0
 duration_seconds = 20
 repetitions = 1
 
 [throughput_sweep]
-points_ops_per_s = [1, 2, 4, 8, 16]
+start_ops_per_s = 1
+max_points = 5
 
 [lambda_channel]
 metadata_backend = "inmemory"

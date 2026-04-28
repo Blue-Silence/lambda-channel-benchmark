@@ -349,6 +349,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-deploy", action="store_true")
     parser.add_argument("--skip-ready-portal", action="store_true")
     parser.add_argument(
+        "--remote-proxy-only",
+        action="store_true",
+        default=os.environ.get("LC_BENCH_REMOTE_PROXY_ONLY") == "1",
+        help=(
+            "run only the workflow proxy experiments against already-started "
+            "remote daemons; skip refresh/readiness/deploy/start/stop/AWS GC"
+        ),
+    )
+    parser.add_argument(
         "--expected-profile",
         default=os.environ.get("BLOB_MULTI_GETTER_EXPECTED_PROFILE", EXPECTED_PROFILE),
         help="when allocating, require the selected allocate ini to name this CloudLab profile",
@@ -401,6 +410,10 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
     args = parse_args(argv)
     proxy_results: list[run_proxy_experiment.ProxyResult] = []
 
+    if args.remote_proxy_only:
+        args.skip_deploy = True
+        args.skip_aws_gc = True
+
     run(["cargo", "test"])
     run(["cargo", "build", "--release"])
 
@@ -419,27 +432,33 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
         log(f"nodes file: {allocate_result.nodes_file}")
     else:
         log("skip allocation; using existing nodes file")
-        refresh_recorded_nodes(args)
+        if args.remote_proxy_only:
+            log("remote proxy-only mode: skip node manifest refresh")
+        else:
+            refresh_recorded_nodes(args)
 
     configure_workflow_outputs(args)
 
-    ready_args = [
-        "--config",
-        args.cloudlab_config,
-        "--allocate-config",
-        args.allocate_config,
-        "--wait",
-        "--require-ssh-auth",
-    ]
-    if args.skip_ready_portal:
-        ready_args.append("--skip-portal")
+    if args.remote_proxy_only:
+        log("remote proxy-only mode: skip CloudLab node readiness checks")
+    else:
+        ready_args = [
+            "--config",
+            args.cloudlab_config,
+            "--allocate-config",
+            args.allocate_config,
+            "--wait",
+            "--require-ssh-auth",
+        ]
+        if args.skip_ready_portal:
+            ready_args.append("--skip-portal")
 
-    log("wait for CloudLab node readiness")
-    ready_result = check_experiment_ready.main(ready_args + ["--poll-sec", "300"])
-    if not ready_result.ready:
-        raise RuntimeError(
-            f"CloudLab nodes are not ready after {ready_result.attempts} readiness attempt(s)"
-        )
+        log("wait for CloudLab node readiness")
+        ready_result = check_experiment_ready.main(ready_args + ["--poll-sec", "300"])
+        if not ready_result.ready:
+            raise RuntimeError(
+                f"CloudLab nodes are not ready after {ready_result.attempts} readiness attempt(s)"
+            )
     require_participant_nodes(args)
 
     if args.skip_deploy:
@@ -449,16 +468,19 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
         deploy_result = deploy.main(["--config", args.cloudlab_config])
         log(f"deployed nodes: {len(deploy_result.nodes)}")
 
-    log("start long-lived lc-bench node daemons with 9-node instances file")
-    start_result = start_expr_servers.main(
-        [
-            "--config",
-            args.cloudlab_config,
-            "--remote-instances-file",
-            remote_instances_file(args.cloudlab_config),
-        ]
-    )
-    log(f"started nodes: {len(start_result.nodes)}")
+    if args.remote_proxy_only:
+        log("remote proxy-only mode: use already-running lc-bench node daemons")
+    else:
+        log("start long-lived lc-bench node daemons with 9-node instances file")
+        start_result = start_expr_servers.main(
+            [
+                "--config",
+                args.cloudlab_config,
+                "--remote-instances-file",
+                remote_instances_file(args.cloudlab_config),
+            ]
+        )
+        log(f"started nodes: {len(start_result.nodes)}")
 
     workflow_failed = True
     try:
@@ -482,15 +504,18 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
                 )
         workflow_failed = False
     finally:
-        if workflow_failed:
+        if workflow_failed and not args.remote_proxy_only:
             collect_remote_node_logs(args)
 
-        log("stop long-lived lc-bench node daemons")
-        try:
-            kill_result = kill_expr_servers.main(["--config", args.cloudlab_config])
-            log(f"stopped nodes: {len(kill_result.nodes)}")
-        except Exception as exc:
-            log(f"stop node failed: {exc}")
+        if args.remote_proxy_only:
+            log("remote proxy-only mode: leave lc-bench node daemons running")
+        else:
+            log("stop long-lived lc-bench node daemons")
+            try:
+                kill_result = kill_expr_servers.main(["--config", args.cloudlab_config])
+                log(f"stopped nodes: {len(kill_result.nodes)}")
+            except Exception as exc:
+                log(f"stop node failed: {exc}")
         if not args.skip_aws_gc:
             log("final AWS GC: force-clean prefixed benchmark resources")
             try:

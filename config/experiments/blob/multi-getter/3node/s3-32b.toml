@@ -14,7 +14,7 @@ force_reset_on_start = true
 [benchmark]
 backend = "s3"
 operations = 1
-concurrency = 64
+concurrency = 8192
 object_size_bytes = 32
 warmup_operations = 0
 duration_seconds = 10

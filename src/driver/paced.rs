@@ -17,6 +17,9 @@ use crate::driver::latency::LatencySummary;
 
 pub(crate) type PacedTask = BoxFuture<'static, Result<(), String>>;
 
+const MAX_RETAINED_SAMPLES: usize = 1024;
+const MAX_RETAINED_FAILURES: usize = 256;
+
 #[derive(Clone, Debug)]
 pub(crate) struct PacedTaskRunConfig {
     pub(crate) target_ops_per_s: f64,
@@ -224,10 +227,13 @@ fn build_report(
     let mut offered_latencies = Vec::with_capacity(executions.len());
     let mut service_latencies = Vec::with_capacity(executions.len());
     let mut schedule_lags = Vec::with_capacity(executions.len());
-    let mut samples = Vec::with_capacity(executions.len());
+    let mut samples = Vec::with_capacity(executions.len().min(MAX_RETAINED_SAMPLES));
     let mut failures = Vec::new();
+    let mut completed_tasks = 0;
+    let mut failed_tasks = 0;
 
     for execution in executions {
+        completed_tasks += 1;
         let offered_latency_ms = duration_ms(duration_since(
             execution.completed_at,
             execution.scheduled_at,
@@ -242,22 +248,25 @@ fn build_report(
         service_latencies.push(service_latency_ms);
         schedule_lags.push(schedule_lag_ms);
         if let Err(message) = execution.result {
-            failures.push(PacedTaskFailure {
+            failed_tasks += 1;
+            if failures.len() < MAX_RETAINED_FAILURES {
+                failures.push(PacedTaskFailure {
+                    index: execution.index,
+                    message,
+                });
+            }
+        }
+        if samples.len() < MAX_RETAINED_SAMPLES {
+            samples.push(PacedTaskSample {
                 index: execution.index,
-                message,
+                ok,
+                offered_latency_ms,
+                service_latency_ms,
+                schedule_lag_ms,
             });
         }
-        samples.push(PacedTaskSample {
-            index: execution.index,
-            ok,
-            offered_latency_ms,
-            service_latency_ms,
-            schedule_lag_ms,
-        });
     }
 
-    let completed_tasks = samples.len();
-    let failed_tasks = failures.len();
     let elapsed_s = wall_time_ms / 1000.0;
     let achieved_ops_per_s = rate_per_second(completed_tasks, elapsed_s);
     let successful_ops_per_s = rate_per_second(completed_tasks - failed_tasks, elapsed_s);
@@ -431,6 +440,31 @@ mod tests {
         assert_eq!(report.failures[0].index, 1);
         assert_eq!(report.offered_latency.count, 3);
         assert!(report.achieved_ops_per_s > 0.0);
+    }
+
+    #[tokio::test]
+    async fn truncates_retained_task_details_without_losing_counts() {
+        let tasks = (0..1100)
+            .map(|index| boxed_task(async move { Err(format!("boom-{index}")) }))
+            .collect();
+
+        let report = run_paced_tasks(
+            tasks,
+            PacedTaskRunConfig {
+                target_ops_per_s: 100_000.0,
+                max_in_flight: 128,
+                pacer_core_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.total_tasks, 1100);
+        assert_eq!(report.completed_tasks, 1100);
+        assert_eq!(report.failed_tasks, 1100);
+        assert_eq!(report.samples.len(), 1024);
+        assert_eq!(report.failures.len(), 256);
+        assert_eq!(report.offered_latency.count, 1100);
     }
 
     #[tokio::test]

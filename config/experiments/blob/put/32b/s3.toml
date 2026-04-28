@@ -14,13 +14,13 @@ force_reset_on_start = true
 [benchmark]
 operations = 1000
 duration_seconds = 10.0
-concurrency = 256
+concurrency = 8192
 object_size_bytes = 32
 warmup_operations = 100
 repetitions = 1
 
 [throughput_sweep]
-start_ops_per_s = 100.0
+start_ops_per_s = 400.0
 step_multiplier = 2.0
 max_ops_per_s = 100000.0
 max_points = 20

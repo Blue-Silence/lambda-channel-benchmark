@@ -14,14 +14,15 @@ force_reset_on_start = true
 [benchmark]
 backend = "s3"
 operations = 1
-concurrency = 16
+concurrency = 8192
 object_size_bytes = 134217728
 warmup_operations = 0
-duration_seconds = 60
+duration_seconds = 20
 repetitions = 1
 
 [throughput_sweep]
-points_ops_per_s = [1, 2, 4, 8, 16, 32, 64]
+start_ops_per_s = 8
+max_points = 20
 
 [lambda_channel]
 metadata_backend = "inmemory"
@@ -42,6 +43,7 @@ non_abortable_task_workers = 16
 [env]
 LC_BENCH_S3_BUCKET_PREFIX = "lcbench-blob-multiget"
 LC_BENCH_S3_KEY_PREFIX = "blob-multi-getter-s3-128m"
+LC_BENCH_BLOB_MULTI_GETTER_PRELOAD_CONCURRENCY = "8"
 
 [[participants]]
 instance_id = "node-0"

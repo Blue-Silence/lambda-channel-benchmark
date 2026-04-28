@@ -7,8 +7,8 @@ use tokio::time::sleep;
 use crate::config::{experiment_summary, instances_summary, ExperimentSpec, InstancesConfig};
 use crate::output;
 use crate::rpc::protocol::{
-    AcceptedResponse, ExperimentRunResult, HealthRequest, NodeRpcClient, PollRequestRequest,
-    RequestResult, RequestStatus,
+    AcceptedResponse, ExperimentRunResult, HealthRequest, PollRequestRequest, RequestResult,
+    RequestStatus,
 };
 use crate::rpc::{
     connect_node, connect_node_addr, serve_node, RunBlobGetRequest, RunExperimentRequest,
@@ -86,8 +86,7 @@ pub async fn run_trigger(
         coordinator.rpc_addr
     );
 
-    let client = connect_node(coordinator).await?;
-    submit_experiment_and_wait(&client, experiment, &coordinator.id, true).await?;
+    submit_experiment_and_wait(&coordinator.rpc_addr, experiment, &coordinator.id, true).await?;
     Ok(())
 }
 
@@ -99,11 +98,14 @@ pub async fn run_proxy(experiment: ExperimentSpec, options: ProxyOptions) -> Res
         options.rpc_addr
     );
 
-    let client = connect_node_addr(&options.rpc_addr).await?;
     let print_result_message = options.csv_output.is_none();
-    let result =
-        submit_experiment_and_wait(&client, experiment, &options.rpc_addr, print_result_message)
-            .await?;
+    let result = submit_experiment_and_wait(
+        &options.rpc_addr,
+        experiment,
+        &options.rpc_addr,
+        print_result_message,
+    )
+    .await?;
     if let Some(csv_output) = options.csv_output.as_ref() {
         print_experiment_failure_summary(&result.message)?;
         let rows = output::append_experiment_csv(csv_output, &result.message)?;
@@ -205,12 +207,13 @@ pub async fn run_blob_get(
 }
 
 async fn submit_experiment_and_wait(
-    client: &NodeRpcClient,
+    target_rpc_addr: &str,
     experiment: ExperimentSpec,
     target_label: &str,
     print_result_message: bool,
 ) -> Result<ExperimentRunResult, String> {
     let rpc_timeout = Duration::from_millis(experiment.coordination.rpc_timeout_ms);
+    let client = connect_node_addr(target_rpc_addr).await?;
     let accepted = client
         .submit_experiment(
             rpc_context(rpc_timeout),
@@ -219,7 +222,7 @@ async fn submit_experiment_and_wait(
         .await
         .map_err(|err| format!("submit_experiment RPC failed for {target_label}: {err}"))?;
     wait_for_submitted_experiment(
-        client,
+        target_rpc_addr,
         target_label,
         accepted,
         print_result_message,
@@ -229,7 +232,7 @@ async fn submit_experiment_and_wait(
 }
 
 async fn wait_for_submitted_experiment(
-    client: &NodeRpcClient,
+    target_rpc_addr: &str,
     target_label: &str,
     accepted: AcceptedResponse,
     print_result_message: bool,
@@ -249,9 +252,11 @@ async fn wait_for_submitted_experiment(
         target_label, accepted.run_id, req_id, accepted.message
     );
 
+    let mut client = connect_node_addr(target_rpc_addr).await?;
     let mut last_progress = Instant::now();
+    let mut last_transient_log = Instant::now() - Duration::from_secs(5);
     loop {
-        let response = client
+        let response = match client
             .poll_request(
                 rpc_context(rpc_timeout),
                 PollRequestRequest {
@@ -261,9 +266,39 @@ async fn wait_for_submitted_experiment(
                 },
             )
             .await
-            .map_err(|err| {
-                format!("poll_request RPC failed for {target_label} req_id={req_id}: {err}")
-            })?;
+        {
+            Ok(response) => response,
+            Err(err) => {
+                let message =
+                    format!("poll_request RPC failed for {target_label} req_id={req_id}: {err}");
+                if !is_transient_poll_error(&message) {
+                    return Err(message);
+                }
+                if last_transient_log.elapsed() >= Duration::from_secs(5) {
+                    println!(
+                        "transient poll_request failure target={} run_id={} req_id={}: {}; reconnecting",
+                        target_label, accepted.run_id, req_id, message
+                    );
+                    last_transient_log = Instant::now();
+                }
+                sleep(Duration::from_millis(500)).await;
+                match connect_node_addr(target_rpc_addr).await {
+                    Ok(next_client) => {
+                        client = next_client;
+                    }
+                    Err(connect_err) => {
+                        if last_transient_log.elapsed() >= Duration::from_secs(5) {
+                            println!(
+                                "transient reconnect failure target={} rpc_addr={} run_id={} req_id={}: {}; retrying",
+                                target_label, target_rpc_addr, accepted.run_id, req_id, connect_err
+                            );
+                            last_transient_log = Instant::now();
+                        }
+                    }
+                }
+                continue;
+            }
+        };
         if !response.ok {
             return Err(format!(
                 "target {target_label} rejected poll_request req_id={req_id}: {}",
@@ -320,6 +355,17 @@ async fn wait_for_submitted_experiment(
 
         sleep(Duration::from_millis(500)).await;
     }
+}
+
+fn is_transient_poll_error(err: &str) -> bool {
+    err.contains("poll_request RPC failed")
+        || err.contains("failed to connect")
+        || err.contains("channel was disconnected")
+        || err.contains("deadline")
+        || err.contains("Connection timed out")
+        || err.contains("timed out")
+        || err.contains("connection reset")
+        || err.contains("broken pipe")
 }
 
 fn rpc_context(timeout: Duration) -> context::Context {

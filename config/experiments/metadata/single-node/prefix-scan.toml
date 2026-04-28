@@ -20,7 +20,7 @@ warmup_operations = 100
 repetitions = 1
 
 [throughput_sweep]
-start_ops_per_s = 100.0
+start_ops_per_s = 200.0
 step_multiplier = 2.0
 max_ops_per_s = 20000.0
 max_points = 8

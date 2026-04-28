@@ -13,6 +13,7 @@ import argparse
 import configparser
 import shlex
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +29,8 @@ from ssh import connect
 
 
 CONFIG_FILE = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
+START_NODE_ATTEMPTS = 3
+START_NODE_RETRY_DELAY_SEC = 5
 
 
 @dataclass(frozen=True)
@@ -212,6 +215,21 @@ def start_node(node: Node, cfg: configparser.ConfigParser) -> None:
         conn.close()
 
 
+def start_node_with_retries(node: Node, cfg: configparser.ConfigParser) -> None:
+    for attempt in range(1, START_NODE_ATTEMPTS + 1):
+        try:
+            start_node(node, cfg)
+            return
+        except Exception as exc:
+            if attempt >= START_NODE_ATTEMPTS:
+                raise
+            log(
+                f"{node.name}: start attempt {attempt}/{START_NODE_ATTEMPTS} failed: "
+                f"{exc}; retrying in {START_NODE_RETRY_DELAY_SEC}s"
+            )
+            time.sleep(START_NODE_RETRY_DELAY_SEC)
+
+
 def main(argv: list[str] | None = None) -> StartResult:
     args = parse_args(argv)
     config_path = args.config.expanduser().resolve()
@@ -238,7 +256,7 @@ def main(argv: list[str] | None = None) -> StartResult:
         action_name="start",
         parallel=parallel,
         max_workers=max_workers,
-        task=lambda node: start_node(node, cfg),
+        task=lambda node: start_node_with_retries(node, cfg),
         log=log,
     )
     log("all expr servers started successfully")

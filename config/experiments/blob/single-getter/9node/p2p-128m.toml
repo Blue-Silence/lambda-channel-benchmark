@@ -14,14 +14,15 @@ force_reset_on_start = true
 [benchmark]
 backend = "p2p"
 operations = 1
-concurrency = 256
+concurrency = 8192
 object_size_bytes = 134217728
 warmup_operations = 0
 duration_seconds = 20
 repetitions = 1
 
 [throughput_sweep]
-points_ops_per_s = [1, 2, 4, 8, 16, 32, 64]
+start_ops_per_s = 2
+max_points = 20
 
 [lambda_channel]
 metadata_backend = "inmemory"
@@ -43,7 +44,7 @@ non_abortable_task_workers = 16
 LC_BENCH_P2P_TRACKER_TABLE_META_PREFIX = "lcbench_blob_singleget_meta"
 LC_BENCH_P2P_TRACKER_TABLE_HOLDERS_PREFIX = "lcbench_blob_singleget_holders"
 LC_BENCH_P2P_CREATE_TRACKER_TABLES = "true"
-LC_BENCH_P2P_TRACKER_INIT_WAIT_TIMEOUT_S = "120"
+LC_BENCH_P2P_TRACKER_INIT_WAIT_TIMEOUT_S = "300"
 LC_BENCH_BLOB_SINGLE_GETTER_PRELOAD_CONCURRENCY = "8"
 
 [[participants]]
