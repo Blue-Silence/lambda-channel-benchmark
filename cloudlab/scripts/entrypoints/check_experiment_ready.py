@@ -39,6 +39,8 @@ import refresh_nodes
 
 SSH_AUTH_ATTEMPTS = 3
 SSH_AUTH_RETRY_DELAY_SECONDS = 2.0
+SSH_BANNER_ATTEMPTS = 3
+SSH_BANNER_RETRY_DELAY_SECONDS = 2.0
 
 
 DEFAULT_CLOUDLAB_CONFIG = CLOUDLAB_DIR / ".config" / "cloudlab.ini"
@@ -124,7 +126,7 @@ def resolve_host(host: str) -> list[str]:
     return sorted(addrs)
 
 
-def check_ssh_banner(node: Node, timeout: float) -> tuple[bool, str]:
+def check_ssh_banner_once(node: Node, timeout: float) -> tuple[bool, str]:
     try:
         with socket.create_connection((node.host, node.port), timeout=timeout) as sock:
             sock.settimeout(timeout)
@@ -145,6 +147,18 @@ def check_ssh_banner(node: Node, timeout: float) -> tuple[bool, str]:
     if not text:
         return False, "empty-banner"
     return False, f"non-ssh-banner: {text[:80]}"
+
+
+def check_ssh_banner(node: Node, timeout: float) -> tuple[bool, str]:
+    last_detail = ""
+    for attempt in range(1, SSH_BANNER_ATTEMPTS + 1):
+        ok, detail = check_ssh_banner_once(node, timeout)
+        if ok:
+            return True, detail
+        last_detail = detail
+        if attempt < SSH_BANNER_ATTEMPTS:
+            time.sleep(SSH_BANNER_RETRY_DELAY_SECONDS)
+    return False, f"{last_detail} after {SSH_BANNER_ATTEMPTS} attempts"
 
 
 def check_ssh_auth(

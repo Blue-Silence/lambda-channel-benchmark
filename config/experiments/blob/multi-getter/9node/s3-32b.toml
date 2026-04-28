@@ -17,12 +17,12 @@ operations = 1
 concurrency = 8192
 object_size_bytes = 32
 warmup_operations = 0
-duration_seconds = 10
+duration_seconds = 5
 repetitions = 1
 
 [throughput_sweep]
 start_ops_per_s = 1600
-max_points = 20
+max_points = 7
 
 [lambda_channel]
 metadata_backend = "inmemory"

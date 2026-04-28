@@ -223,6 +223,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="experiment id/name passed to refresh_nodes.py when --skip-allocate is used",
     )
     parser.add_argument(
+        "--skip-refresh-nodes",
+        action="store_true",
+        default=os.environ.get("LC_BENCH_SKIP_REFRESH_NODES") == "1",
+        help="when --skip-allocate is used, trust the existing nodes.ini",
+    )
+    parser.add_argument(
         "--skip-deploy",
         action="store_true",
         help="reuse the existing remote deployment instead of packaging and deploying",
@@ -324,7 +330,10 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
         log(f"nodes file: {allocate_result.nodes_file}")
     else:
         log("skip allocation; using existing nodes file")
-        refresh_recorded_nodes(args)
+        if args.skip_refresh_nodes:
+            log("skip node manifest refresh; trusting existing nodes file")
+        else:
+            refresh_recorded_nodes(args)
 
     configure_workflow_outputs(args)
 
@@ -341,7 +350,7 @@ def main(argv: list[str] | None = None) -> list[run_proxy_experiment.ProxyResult
         ready_args.append("--skip-portal")
 
     log("wait for CloudLab node readiness")
-    ready_result = check_experiment_ready.main(ready_args + ["--poll-sec", "300"])
+    ready_result = check_experiment_ready.main(ready_args + ["--poll-sec", "30"])
     if not ready_result.ready:
         raise RuntimeError(
             f"CloudLab node is not ready after {ready_result.attempts} readiness attempt(s)"
