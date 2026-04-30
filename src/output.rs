@@ -169,6 +169,35 @@ const EXPERIMENT_CSV_HEADER: &[&str] = &[
     "putter_count",
     "putter_instance_ids",
     "expected_working_set_bytes",
+    "consume_mode",
+    "sender_instance_id",
+    "receiver_count",
+    "receiver_instance_ids",
+    "target_sender_ops_per_s",
+    "expected_receiver_ops_per_s",
+    "sender_successful_push_ops_per_s",
+    "sender_limited",
+    "sender_limited_ratio",
+    "aggregate_delivered_ops_per_s",
+    "aggregate_delivered_bytes_per_s",
+    "sum_receiver_ops_per_s",
+    "mean_receiver_ops_per_s",
+    "slowest_receiver_ops_per_s",
+    "fastest_receiver_ops_per_s",
+    "receiver_count_min",
+    "receiver_count_max",
+    "receiver_count_stddev",
+    "eof_time_spread_ms",
+    "payload_strategy",
+    "prestage_payload_ms",
+    "poll_strategy",
+    "poll_target_multiplier",
+    "delivery_latency_p50_ms",
+    "delivery_latency_p90_ms",
+    "delivery_latency_p99_ms",
+    "materialize_latency_p50_ms",
+    "materialize_latency_p90_ms",
+    "materialize_latency_p99_ms",
 ];
 
 pub fn append_experiment_csv(path: &Path, report_json: &str) -> Result<usize, String> {
@@ -188,7 +217,9 @@ pub fn append_experiment_csv(path: &Path, report_json: &str) -> Result<usize, St
         })?;
     }
 
-    let write_header = csv_needs_header_or_validate(path)?;
+    let existing_width = existing_csv_width_or_validate(path)?;
+    let write_header = existing_width.is_none();
+    let row_width = existing_width.unwrap_or(EXPERIMENT_CSV_HEADER.len());
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -198,7 +229,7 @@ pub fn append_experiment_csv(path: &Path, report_json: &str) -> Result<usize, St
         write_csv_record(&mut file, EXPERIMENT_CSV_HEADER)?;
     }
     for row in &rows {
-        write_csv_record(&mut file, row)?;
+        write_csv_record(&mut file, row.iter().take(row_width))?;
     }
     Ok(rows.len())
 }
@@ -337,14 +368,59 @@ fn experiment_csv_rows(report_json: &str) -> Result<Vec<Vec<String>>, String> {
                     .or_else(|| report.get("putter_instance_ids")),
             ),
             cell(datapoint.get("expected_working_set_bytes")),
+            cell(
+                datapoint
+                    .get("consume_mode")
+                    .or_else(|| report.get("consume_mode")),
+            ),
+            cell(
+                datapoint
+                    .get("sender_instance_id")
+                    .or_else(|| report.get("sender_instance_id")),
+            ),
+            cell(
+                datapoint
+                    .get("receiver_count")
+                    .or_else(|| report.get("receiver_count")),
+            ),
+            string_array_cell(
+                datapoint
+                    .get("receiver_instance_ids")
+                    .or_else(|| report.get("receiver_instance_ids")),
+            ),
+            cell(datapoint.get("target_sender_ops_per_s")),
+            cell(datapoint.get("expected_receiver_ops_per_s")),
+            cell(datapoint.get("sender_successful_push_ops_per_s")),
+            cell(datapoint.get("sender_limited")),
+            cell(datapoint.get("sender_limited_ratio")),
+            cell(datapoint.get("aggregate_delivered_ops_per_s")),
+            cell(datapoint.get("aggregate_delivered_bytes_per_s")),
+            cell(datapoint.get("sum_receiver_ops_per_s")),
+            cell(datapoint.get("mean_receiver_ops_per_s")),
+            cell(datapoint.get("slowest_receiver_ops_per_s")),
+            cell(datapoint.get("fastest_receiver_ops_per_s")),
+            cell(datapoint.get("receiver_count_min")),
+            cell(datapoint.get("receiver_count_max")),
+            cell(datapoint.get("receiver_count_stddev")),
+            cell(datapoint.get("eof_time_spread_ms")),
+            cell(datapoint.get("payload_strategy")),
+            cell(datapoint.get("prestage_payload_ms")),
+            cell(datapoint.get("poll_strategy")),
+            cell(datapoint.get("poll_target_multiplier")),
+            cell(datapoint.get("delivery_latency_p50_ms")),
+            cell(datapoint.get("delivery_latency_p90_ms")),
+            cell(datapoint.get("delivery_latency_p99_ms")),
+            cell(datapoint.get("materialize_latency_p50_ms")),
+            cell(datapoint.get("materialize_latency_p90_ms")),
+            cell(datapoint.get("materialize_latency_p99_ms")),
         ]);
     }
     Ok(rows)
 }
 
-fn csv_needs_header_or_validate(path: &Path) -> Result<bool, String> {
+fn existing_csv_width_or_validate(path: &Path) -> Result<Option<usize>, String> {
     match fs::metadata(path) {
-        Ok(metadata) if metadata.len() == 0 => Ok(true),
+        Ok(metadata) if metadata.len() == 0 => Ok(None),
         Ok(_) => {
             let file = fs::File::open(path)
                 .map_err(|err| format!("failed to open CSV output {}: {err}", path.display()))?;
@@ -354,17 +430,16 @@ fn csv_needs_header_or_validate(path: &Path) -> Result<bool, String> {
                 .read_line(&mut existing_header)
                 .map_err(|err| format!("failed to read CSV header {}: {err}", path.display()))?;
             let existing_header = existing_header.trim_end_matches(['\r', '\n']);
-            let expected_header = EXPERIMENT_CSV_HEADER.join(",");
-            if existing_header == expected_header {
-                Ok(false)
-            } else {
-                Err(format!(
-                    "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v6 schema",
-                    path.display()
-                ))
+            let existing_fields = existing_header.split(',').collect::<Vec<_>>();
+            if EXPERIMENT_CSV_HEADER.starts_with(&existing_fields) {
+                return Ok(Some(existing_fields.len()));
             }
+            Err(format!(
+                "CSV output {} has an incompatible header; write to a new file or migrate the existing CSV to the current datapoint-v6 schema",
+                path.display()
+            ))
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(format!(
             "failed to inspect CSV output {}: {err}",
             path.display()

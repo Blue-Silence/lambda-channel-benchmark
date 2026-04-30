@@ -1,0 +1,89 @@
+[run]
+run_id = "channel-single-sender-multi-receiver-s3-fanout-32b"
+workload = "channel.single_sender_multi_receiver"
+description = "Measure end-to-end channel delivery for s3 fanout 32b."
+output_dir = "out/channel-single-sender-multi-receiver-s3-fanout-32b"
+seed = 1
+
+[coordination]
+rpc_timeout_ms = 60000
+barrier_timeout_ms = 1800000
+cleanup_timeout_ms = 30000
+force_reset_on_start = true
+
+[benchmark]
+backend = "s3"
+operations = 1
+concurrency = 8192
+object_size_bytes = 32
+warmup_operations = 0
+duration_seconds = 20
+repetitions = 1
+
+[throughput_sweep]
+start_ops_per_s = 25
+max_ops_per_s = 1000000
+max_points = 20
+saturation_achieved_ratio = 0.5
+stop_on_failure = false
+
+[lambda_channel]
+metadata_backend = "dynamodb"
+channel_id_prefix = "lcbench-channel-s3-fanout-32b"
+consume_mode = "fanout"
+
+[p2p]
+tracker_backend = "dynamodb"
+cache_root = ".bench/cache"
+chunk_server_bind_host = "0.0.0.0"
+chunk_server_port_base = 18080
+chunk_server_runtime_worker_threads = 4
+enable_accel = true
+accel_probability = 0.9
+persist_backend = "none"
+non_abortable_task_workers = 16
+
+[env]
+LC_BENCH_S3_BUCKET_PREFIX = "lcbench-channel"
+LC_BENCH_METADATA_TABLE_PREFIX = "lcbench_channel_metadata"
+LC_BENCH_METADATA_INIT_WAIT_TIMEOUT_S = "300"
+LC_BENCH_P2P_TRACKER_TABLE_META_PREFIX = "lcbench_channel_p2p_meta"
+LC_BENCH_P2P_TRACKER_TABLE_HOLDERS_PREFIX = "lcbench_channel_p2p_holders"
+LC_BENCH_P2P_CREATE_TRACKER_TABLES = "true"
+LC_BENCH_P2P_TRACKER_INIT_WAIT_TIMEOUT_S = "300"
+
+[[participants]]
+instance_id = "node-0"
+label = "sender"
+
+[[participants]]
+instance_id = "node-1"
+label = "receiver"
+
+[[participants]]
+instance_id = "node-2"
+label = "receiver"
+
+[[participants]]
+instance_id = "node-3"
+label = "receiver"
+
+[[participants]]
+instance_id = "node-4"
+label = "receiver"
+
+[[participants]]
+instance_id = "node-5"
+label = "receiver"
+
+[[participants]]
+instance_id = "node-6"
+label = "receiver"
+
+[[participants]]
+instance_id = "node-7"
+label = "receiver"
+
+[[participants]]
+instance_id = "node-8"
+label = "receiver"

@@ -95,6 +95,10 @@ pub struct LambdaChannelConfig {
     pub consume_mode: String,
     #[serde(default)]
     pub native_worker_threads: Option<usize>,
+    #[serde(default)]
+    pub min_elements_per_datapoint: Option<usize>,
+    #[serde(default)]
+    pub max_elements_per_datapoint: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -239,6 +243,35 @@ impl ExperimentSpec {
         }
         if self.lambda_channel.consume_mode.trim().is_empty() {
             return Err("lambda_channel.consume_mode must not be empty".to_string());
+        }
+        if self
+            .lambda_channel
+            .min_elements_per_datapoint
+            .is_some_and(|value| value == 0)
+        {
+            return Err(
+                "lambda_channel.min_elements_per_datapoint must be greater than zero".to_string(),
+            );
+        }
+        if self
+            .lambda_channel
+            .max_elements_per_datapoint
+            .is_some_and(|value| value == 0)
+        {
+            return Err(
+                "lambda_channel.max_elements_per_datapoint must be greater than zero".to_string(),
+            );
+        }
+        if let (Some(min), Some(max)) = (
+            self.lambda_channel.min_elements_per_datapoint,
+            self.lambda_channel.max_elements_per_datapoint,
+        ) {
+            if min > max {
+                return Err(
+                    "lambda_channel.min_elements_per_datapoint must be <= max_elements_per_datapoint"
+                        .to_string(),
+                );
+            }
         }
         if self.p2p.tracker_backend.trim().is_empty() {
             return Err("p2p.tracker_backend must not be empty".to_string());

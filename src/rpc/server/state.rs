@@ -1,22 +1,24 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use lambda_channel::blob_store_impl::{BlobRefHandle, BlobStoreHandle};
 use lambda_channel::metadata_blob_channel::receiver::{AsyncMetadataBlobRecv, ConsumeMode};
 use lambda_channel::metadata_blob_channel::sender::AsyncMetadataBlobSender;
-use lambda_channel::metadata_store_impl::in_memory::AsyncInMemoryMetadataStore;
 use lambda_channel::metadata_store_impl::MetadataStoreHandle;
 use tokio::sync::Mutex;
 
-use crate::blob_store_factory::unique_resource_id;
-use crate::config::InstanceConfig;
+use crate::blob_store_factory::{create_blob_store, unique_resource_id, BlobStoreCreateOptions};
+use crate::config::{ExperimentSpec, InstanceConfig};
+use crate::metadata_store_factory;
 use crate::rpc::protocol::{
     AcceptedResponse, Artifact, BeginExprRequest, BlobPutRefsChunkRequest,
-    BlobPutRefsChunkResponse, ExprActionResponse, InitMetadataStoreRequest, InitReceiverRequest,
-    InitSenderRequest, MetricRecord, PollExprRequest, PollExprResponse, PollRequestRequest,
-    PollRequestResponse, RequestResult, RequestStatus, RequestSummary, ResetExprRequest,
-    ResourceSummary,
+    BlobPutRefsChunkResponse, CancelRequestRequest, ChannelReceiverSamplesChunkRequest,
+    ChannelReceiverSamplesChunkResponse, ExprActionResponse, InitMetadataStoreRequest,
+    InitReceiverRequest, InitSenderRequest, MetricRecord, PollExprRequest, PollExprResponse,
+    PollRequestRequest, PollRequestResponse, RequestResult, RequestStatus, RequestSummary,
+    ResetExprRequest, ResourceSummary,
 };
 
 #[derive(Clone)]
@@ -29,20 +31,25 @@ pub(crate) struct BlobStoreResource {
 #[derive(Clone)]
 pub(crate) struct MetadataStoreResource {
     pub(crate) backend: String,
+    pub(crate) details: BTreeMap<String, String>,
     pub(crate) handle: MetadataStoreHandle,
 }
 
 #[derive(Clone)]
 pub(crate) struct SenderResource {
     pub(crate) channel_id: String,
-    pub(crate) _handle: AsyncMetadataBlobSender,
+    pub(crate) handle: AsyncMetadataBlobSender,
+    pub(crate) blob_store: BlobStoreResource,
+    pub(crate) metadata_store: MetadataStoreResource,
 }
 
 #[derive(Clone)]
 pub(crate) struct ReceiverResource {
     pub(crate) channel_id: String,
     pub(crate) consumer_id: String,
-    pub(crate) _handle: AsyncMetadataBlobRecv,
+    pub(crate) handle: AsyncMetadataBlobRecv,
+    pub(crate) blob_store: BlobStoreResource,
+    pub(crate) metadata_store: MetadataStoreResource,
 }
 
 #[derive(Clone)]
@@ -83,6 +90,8 @@ pub(crate) struct RequestRecord {
     pub(crate) req_id: String,
     pub(crate) kind: String,
     pub(crate) status: RequestStatus,
+    pub(crate) ready: bool,
+    pub(crate) cancelled: Arc<AtomicBool>,
     pub(crate) result: Option<RequestResult>,
     pub(crate) error: Option<String>,
 }
@@ -107,17 +116,40 @@ impl NodeRuntimeState {
 impl ExprState {
     fn resource_summary(&self) -> ResourceSummary {
         ResourceSummary {
-            blob_store: self.blob_store.as_ref().map(|resource| {
-                resource
-                    .root_dir
-                    .as_ref()
-                    .map(|root| format!("{}:{root}", resource.backend))
-                    .unwrap_or_else(|| resource.backend.clone())
-            }),
+            blob_store: self
+                .blob_store
+                .as_ref()
+                .map(|resource| {
+                    resource
+                        .root_dir
+                        .as_ref()
+                        .map(|root| format!("{}:{root}", resource.backend))
+                        .unwrap_or_else(|| resource.backend.clone())
+                })
+                .or_else(|| {
+                    self.sender
+                        .as_ref()
+                        .map(|resource| format!("sender:{}", resource.blob_store.backend))
+                })
+                .or_else(|| {
+                    self.receiver
+                        .as_ref()
+                        .map(|resource| format!("receiver:{}", resource.blob_store.backend))
+                }),
             metadata_store: self
                 .metadata_store
                 .as_ref()
-                .map(|resource| resource.backend.clone()),
+                .map(|resource| resource.backend.clone())
+                .or_else(|| {
+                    self.sender
+                        .as_ref()
+                        .map(|resource| format!("sender:{}", resource.metadata_store.backend))
+                })
+                .or_else(|| {
+                    self.receiver
+                        .as_ref()
+                        .map(|resource| format!("receiver:{}", resource.metadata_store.backend))
+                }),
             sender: self
                 .sender
                 .as_ref()
@@ -205,54 +237,78 @@ pub(crate) async fn init_metadata_store_on_node(
     runtime: &Arc<Mutex<NodeRuntimeState>>,
     request: InitMetadataStoreRequest,
 ) -> Result<(), String> {
-    let backend = request.backend.trim().to_ascii_lowercase();
-    let handle = match backend.as_str() {
-        "inmemory" | "in-memory" => {
-            Arc::new(AsyncInMemoryMetadataStore::default()) as MetadataStoreHandle
-        }
-        other => return Err(format!("unsupported metadata store backend: {other}")),
-    };
+    let created = metadata_store_factory::create_metadata_store(
+        &InstanceConfig {
+            id: "local".to_string(),
+            rpc_addr: String::new(),
+            rpc_listen_addr: None,
+            p2p_advertise_endpoint: String::new(),
+            work_dir: PathBuf::new(),
+            capabilities: Vec::new(),
+            labels: BTreeMap::new(),
+        },
+        None,
+        &request.backend,
+        &request.run_id,
+        true,
+    )
+    .await?;
 
     let mut runtime = runtime.lock().await;
     let current = current_expr_mut(&mut runtime, &request.run_id)?;
     if current.metadata_store.is_some() && !request.force_reinit {
         return Ok(());
     }
-    current.metadata_store = Some(MetadataStoreResource { backend, handle });
+    current.metadata_store = Some(MetadataStoreResource {
+        backend: created.backend,
+        details: created.details,
+        handle: created.handle,
+    });
     current.phase = "metadata_store_ready".to_string();
     runtime.generation += 1;
     Ok(())
 }
 
 pub(crate) async fn init_sender_on_node(
+    instance: &InstanceConfig,
     runtime: &Arc<Mutex<NodeRuntimeState>>,
     request: InitSenderRequest,
 ) -> Result<(), String> {
     if request.channel_id.trim().is_empty() {
         return Err("sender channel_id must not be empty".to_string());
     }
-    let (metadata_store, blob_store) = {
+    {
         let runtime = runtime.lock().await;
         let current = current_expr(&runtime, &request.run_id)?;
-        (
-            current
-                .metadata_store
-                .as_ref()
-                .ok_or_else(|| "init_sender requires metadata_store state".to_string())?
-                .handle
-                .clone(),
-            current
-                .blob_store
-                .as_ref()
-                .ok_or_else(|| "init_sender requires blob_store state".to_string())?
-                .handle
-                .clone(),
-        )
-    };
+        if current.sender.is_some() && !request.force_reinit {
+            return Ok(());
+        }
+    }
+
+    let blob_store = create_channel_blob_store(
+        instance,
+        runtime,
+        &request.run_id,
+        request.backend.as_deref(),
+        request.experiment.as_ref(),
+        request.resource_id.as_deref(),
+        request.root_dir.clone(),
+        request.create_remote_resources,
+    )
+    .await?;
+    let metadata_store = create_channel_metadata_store(
+        instance,
+        &request.run_id,
+        request.metadata_backend.as_deref(),
+        request.experiment.as_ref(),
+        request.resource_id.as_deref(),
+        request.create_remote_resources,
+    )
+    .await?;
     let sender = AsyncMetadataBlobSender::new(
         request.channel_id.clone(),
-        metadata_store,
-        blob_store,
+        metadata_store.handle.clone(),
+        blob_store.handle.clone(),
         request.reopen,
         request.recover,
     )
@@ -261,19 +317,39 @@ pub(crate) async fn init_sender_on_node(
 
     let mut runtime = runtime.lock().await;
     let current = current_expr_mut(&mut runtime, &request.run_id)?;
-    if current.sender.is_some() && !request.force_reinit {
-        return Ok(());
-    }
+    let metadata_details = metadata_store.details.clone();
+    let blob_details = BTreeMap::from([
+        ("backend".to_string(), blob_store.backend.clone()),
+        (
+            "root_dir".to_string(),
+            blob_store.root_dir.clone().unwrap_or_default(),
+        ),
+    ]);
     current.sender = Some(SenderResource {
         channel_id: request.channel_id,
-        _handle: sender,
+        handle: sender,
+        blob_store,
+        metadata_store,
     });
+    put_artifact(
+        current,
+        "sender_blob_store_details",
+        "blob_store_details",
+        serde_json::to_value(blob_details).unwrap_or(serde_json::Value::Null),
+    );
+    put_artifact(
+        current,
+        "sender_metadata_store_details",
+        "metadata_store_details",
+        serde_json::to_value(metadata_details).unwrap_or(serde_json::Value::Null),
+    );
     current.phase = "sender_ready".to_string();
     runtime.generation += 1;
     Ok(())
 }
 
 pub(crate) async fn init_receiver_on_node(
+    instance: &InstanceConfig,
     runtime: &Arc<Mutex<NodeRuntimeState>>,
     request: InitReceiverRequest,
 ) -> Result<(), String> {
@@ -284,28 +360,38 @@ pub(crate) async fn init_receiver_on_node(
         return Err("receiver consumer_id must not be empty".to_string());
     }
     let consume_mode = parse_consume_mode(&request.consume_mode)?;
-    let (metadata_store, blob_store) = {
+    {
         let runtime = runtime.lock().await;
         let current = current_expr(&runtime, &request.run_id)?;
-        (
-            current
-                .metadata_store
-                .as_ref()
-                .ok_or_else(|| "init_receiver requires metadata_store state".to_string())?
-                .handle
-                .clone(),
-            current
-                .blob_store
-                .as_ref()
-                .ok_or_else(|| "init_receiver requires blob_store state".to_string())?
-                .handle
-                .clone(),
-        )
-    };
+        if current.receiver.is_some() && !request.force_reinit {
+            return Ok(());
+        }
+    }
+
+    let blob_store = create_channel_blob_store(
+        instance,
+        runtime,
+        &request.run_id,
+        request.backend.as_deref(),
+        request.experiment.as_ref(),
+        request.resource_id.as_deref(),
+        request.root_dir.clone(),
+        request.create_remote_resources,
+    )
+    .await?;
+    let metadata_store = create_channel_metadata_store(
+        instance,
+        &request.run_id,
+        request.metadata_backend.as_deref(),
+        request.experiment.as_ref(),
+        request.resource_id.as_deref(),
+        request.create_remote_resources,
+    )
+    .await?;
     let Some(receiver) = AsyncMetadataBlobRecv::new(
         request.channel_id.clone(),
-        metadata_store,
-        blob_store,
+        metadata_store.handle.clone(),
+        blob_store.handle.clone(),
         request.consumer_id.clone(),
         request.start_seq,
         consume_mode,
@@ -322,17 +408,100 @@ pub(crate) async fn init_receiver_on_node(
 
     let mut runtime = runtime.lock().await;
     let current = current_expr_mut(&mut runtime, &request.run_id)?;
-    if current.receiver.is_some() && !request.force_reinit {
-        return Ok(());
-    }
+    let metadata_details = metadata_store.details.clone();
+    let blob_details = BTreeMap::from([
+        ("backend".to_string(), blob_store.backend.clone()),
+        (
+            "root_dir".to_string(),
+            blob_store.root_dir.clone().unwrap_or_default(),
+        ),
+    ]);
     current.receiver = Some(ReceiverResource {
         channel_id: request.channel_id,
         consumer_id: request.consumer_id,
-        _handle: receiver,
+        handle: receiver,
+        blob_store,
+        metadata_store,
     });
+    put_artifact(
+        current,
+        "receiver_blob_store_details",
+        "blob_store_details",
+        serde_json::to_value(blob_details).unwrap_or(serde_json::Value::Null),
+    );
+    put_artifact(
+        current,
+        "receiver_metadata_store_details",
+        "metadata_store_details",
+        serde_json::to_value(metadata_details).unwrap_or(serde_json::Value::Null),
+    );
     current.phase = "receiver_ready".to_string();
     runtime.generation += 1;
     Ok(())
+}
+
+async fn create_channel_metadata_store(
+    instance: &InstanceConfig,
+    run_id: &str,
+    metadata_backend: Option<&str>,
+    experiment: Option<&ExperimentSpec>,
+    resource_id: Option<&str>,
+    create_remote_resources: bool,
+) -> Result<MetadataStoreResource, String> {
+    let backend = metadata_backend
+        .map(str::to_string)
+        .or_else(|| experiment.map(|experiment| experiment.lambda_channel.metadata_backend.clone()))
+        .unwrap_or_else(|| "inmemory".to_string());
+    let resource_id = resource_id.unwrap_or(run_id);
+    let created = metadata_store_factory::create_metadata_store(
+        instance,
+        experiment,
+        &backend,
+        resource_id,
+        create_remote_resources,
+    )
+    .await?;
+    Ok(MetadataStoreResource {
+        backend: created.backend,
+        details: created.details,
+        handle: created.handle,
+    })
+}
+
+async fn create_channel_blob_store(
+    instance: &InstanceConfig,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    run_id: &str,
+    backend: Option<&str>,
+    experiment: Option<&ExperimentSpec>,
+    resource_id: Option<&str>,
+    root_dir: Option<String>,
+    create_remote_resources: bool,
+) -> Result<BlobStoreResource, String> {
+    let run_dir = {
+        let runtime = runtime.lock().await;
+        current_expr(&runtime, run_id)?.run_dir.clone()
+    };
+    let backend = backend
+        .map(str::to_string)
+        .or_else(|| experiment.map(|experiment| experiment.benchmark.backend.clone()))
+        .ok_or_else(|| "channel endpoint init requires blob backend".to_string())?;
+    let resource_id = resource_id.unwrap_or(run_id);
+    let created = create_blob_store(BlobStoreCreateOptions {
+        instance,
+        experiment,
+        run_dir: &run_dir,
+        backend: &backend,
+        resource_id,
+        root_dir: root_dir.map(PathBuf::from),
+        create_remote_resources,
+    })
+    .await?;
+    Ok(BlobStoreResource {
+        backend: created.backend,
+        root_dir: created.root_dir,
+        handle: created.handle,
+    })
 }
 
 pub(crate) async fn poll_expr_on_node(
@@ -408,6 +577,8 @@ pub(crate) async fn create_request_on_node(
             req_id: req_id.clone(),
             kind: kind.to_string(),
             status: RequestStatus::Running,
+            ready: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
             result: None,
             error: None,
         },
@@ -428,6 +599,72 @@ pub(crate) async fn create_request_on_node(
         req_id: Some(req_id),
         message: "request accepted".to_string(),
     }
+}
+
+pub(crate) async fn mark_request_ready_on_node(
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    run_id: &str,
+    req_id: &str,
+) -> Result<(), String> {
+    let mut runtime = runtime.lock().await;
+    let key = (run_id.to_string(), req_id.to_string());
+    let kind = {
+        let request = runtime
+            .requests
+            .get_mut(&key)
+            .ok_or_else(|| format!("unknown req_id={req_id} for run_id={run_id}"))?;
+        request.ready = true;
+        request.kind.clone()
+    };
+    if let Some(current) = runtime
+        .current
+        .as_mut()
+        .filter(|current| current.run_id == run_id)
+    {
+        current.phase = format!("request_ready:{kind}");
+    }
+    runtime.generation += 1;
+    Ok(())
+}
+
+pub(crate) async fn request_cancel_flag_on_node(
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    run_id: &str,
+    req_id: &str,
+) -> Result<Arc<AtomicBool>, String> {
+    let runtime = runtime.lock().await;
+    runtime
+        .requests
+        .get(&(run_id.to_string(), req_id.to_string()))
+        .map(|record| record.cancelled.clone())
+        .ok_or_else(|| format!("unknown req_id={req_id} for run_id={run_id}"))
+}
+
+pub(crate) async fn cancel_request_on_node(
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    request: CancelRequestRequest,
+) -> Result<(), String> {
+    let mut runtime = runtime.lock().await;
+    let key = (request.run_id.clone(), request.req_id.clone());
+    let kind = {
+        let record = runtime.requests.get_mut(&key).ok_or_else(|| {
+            format!(
+                "unknown req_id={} for run_id={}",
+                request.req_id, request.run_id
+            )
+        })?;
+        record.cancelled.store(true, Ordering::Relaxed);
+        record.kind.clone()
+    };
+    if let Some(current) = runtime
+        .current
+        .as_mut()
+        .filter(|current| current.run_id == request.run_id)
+    {
+        current.phase = format!("request_cancelled:{kind}");
+    }
+    runtime.generation += 1;
+    Ok(())
 }
 
 pub(crate) async fn finish_request_on_node(
@@ -504,6 +741,7 @@ pub(crate) async fn poll_request_on_node(
             run_id: Some(request.run_id),
             req_id: request.req_id,
             status: RequestStatus::Missing,
+            ready: false,
             result: None,
             message: "unknown request id".to_string(),
         };
@@ -515,8 +753,9 @@ pub(crate) async fn poll_request_on_node(
         run_id: Some(record.run_id.clone()),
         req_id: record.req_id.clone(),
         status: record.status.clone(),
+        ready: record.ready,
         result: if request.include_result {
-            record.result.clone()
+            record.result.as_ref().map(strip_large_request_result)
         } else {
             None
         },
@@ -524,6 +763,18 @@ pub(crate) async fn poll_request_on_node(
             .error
             .clone()
             .unwrap_or_else(|| format!("{} request is {:?}", record.kind, record.status)),
+    }
+}
+
+fn strip_large_request_result(result: &RequestResult) -> RequestResult {
+    match result {
+        RequestResult::ChannelReceiver(result) => {
+            let mut result = result.clone();
+            result.delivery_latency_samples_ms.clear();
+            result.materialize_latency_samples_ms.clear();
+            RequestResult::ChannelReceiver(result)
+        }
+        other => other.clone(),
     }
 }
 
@@ -614,6 +865,119 @@ pub(crate) async fn blob_put_refs_chunk_on_node(
             elapsed_ms: 0.0,
             offset: request.offset,
             refs: Vec::new(),
+            has_more: false,
+            message: record
+                .error
+                .clone()
+                .unwrap_or_else(|| format!("{} request is {:?}", record.kind, record.status)),
+        },
+    }
+}
+
+pub(crate) async fn channel_receiver_samples_chunk_on_node(
+    instance_id: &str,
+    runtime: &Arc<Mutex<NodeRuntimeState>>,
+    request: ChannelReceiverSamplesChunkRequest,
+) -> ChannelReceiverSamplesChunkResponse {
+    if request.limit == 0 {
+        return ChannelReceiverSamplesChunkResponse {
+            ok: false,
+            instance_id: instance_id.to_string(),
+            run_id: Some(request.run_id),
+            req_id: request.req_id,
+            status: RequestStatus::Missing,
+            offset: request.offset,
+            delivery_count: 0,
+            materialize_count: 0,
+            delivery_latency_samples_ms: Vec::new(),
+            materialize_latency_samples_ms: Vec::new(),
+            has_more: false,
+            message: "samples chunk limit must be greater than zero".to_string(),
+        };
+    }
+
+    let runtime = runtime.lock().await;
+    let Some(record) = runtime
+        .requests
+        .get(&(request.run_id.clone(), request.req_id.clone()))
+    else {
+        return ChannelReceiverSamplesChunkResponse {
+            ok: true,
+            instance_id: instance_id.to_string(),
+            run_id: Some(request.run_id),
+            req_id: request.req_id,
+            status: RequestStatus::Missing,
+            offset: request.offset,
+            delivery_count: 0,
+            materialize_count: 0,
+            delivery_latency_samples_ms: Vec::new(),
+            materialize_latency_samples_ms: Vec::new(),
+            has_more: false,
+            message: "unknown request id".to_string(),
+        };
+    };
+
+    match (&record.status, &record.result) {
+        (RequestStatus::Finished, Some(RequestResult::ChannelReceiver(result))) => {
+            let delivery_offset = request.offset.min(result.delivery_latency_samples_ms.len());
+            let delivery_end = delivery_offset
+                .saturating_add(request.limit)
+                .min(result.delivery_latency_samples_ms.len());
+            let materialize_offset = request
+                .offset
+                .min(result.materialize_latency_samples_ms.len());
+            let materialize_end = materialize_offset
+                .saturating_add(request.limit)
+                .min(result.materialize_latency_samples_ms.len());
+            let has_more = delivery_end < result.delivery_latency_samples_ms.len()
+                || materialize_end < result.materialize_latency_samples_ms.len();
+            ChannelReceiverSamplesChunkResponse {
+                ok: true,
+                instance_id: instance_id.to_string(),
+                run_id: Some(record.run_id.clone()),
+                req_id: record.req_id.clone(),
+                status: record.status.clone(),
+                offset: request.offset,
+                delivery_count: result.delivery_latency_samples_ms.len(),
+                materialize_count: result.materialize_latency_samples_ms.len(),
+                delivery_latency_samples_ms: result.delivery_latency_samples_ms
+                    [delivery_offset..delivery_end]
+                    .to_vec(),
+                materialize_latency_samples_ms: result.materialize_latency_samples_ms
+                    [materialize_offset..materialize_end]
+                    .to_vec(),
+                has_more,
+                message: format!(
+                    "channel receiver samples chunk offset={} limit={}",
+                    request.offset, request.limit
+                ),
+            }
+        }
+        (RequestStatus::Finished, Some(other)) => ChannelReceiverSamplesChunkResponse {
+            ok: false,
+            instance_id: instance_id.to_string(),
+            run_id: Some(record.run_id.clone()),
+            req_id: record.req_id.clone(),
+            status: record.status.clone(),
+            offset: request.offset,
+            delivery_count: 0,
+            materialize_count: 0,
+            delivery_latency_samples_ms: Vec::new(),
+            materialize_latency_samples_ms: Vec::new(),
+            has_more: false,
+            message: format!("request result is not ChannelReceiver: {other:?}"),
+        },
+        _ => ChannelReceiverSamplesChunkResponse {
+            ok: true,
+            instance_id: instance_id.to_string(),
+            run_id: Some(record.run_id.clone()),
+            req_id: record.req_id.clone(),
+            status: record.status.clone(),
+            offset: request.offset,
+            delivery_count: 0,
+            materialize_count: 0,
+            delivery_latency_samples_ms: Vec::new(),
+            materialize_latency_samples_ms: Vec::new(),
             has_more: false,
             message: record
                 .error
@@ -745,6 +1109,16 @@ async fn close_expr_state(expr: Option<ExprState>) -> Result<(), String> {
         return Ok(());
     };
     let mut errors = Vec::new();
+    if let Some(receiver) = expr.receiver {
+        if let Err(err) = close_blob_store_resource(receiver.blob_store, &expr.run_id).await {
+            errors.push(format!("failed to close receiver blob store: {err}"));
+        }
+    }
+    if let Some(sender) = expr.sender {
+        if let Err(err) = close_blob_store_resource(sender.blob_store, &expr.run_id).await {
+            errors.push(format!("failed to close sender blob store: {err}"));
+        }
+    }
     if let Some(blob_store) = expr.blob_store {
         if let Err(err) = close_blob_store_resource(blob_store, &expr.run_id).await {
             errors.push(err);

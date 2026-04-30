@@ -6,24 +6,29 @@ use crate::config::{experiment_summary, InstanceConfig, InstancesConfig};
 use crate::experiments::{run_blob_get_on_node, run_experiment_on_node};
 use crate::rpc::protocol::{
     AcceptedResponse, BeginExprRequest, BlobPutRefsChunkRequest, BlobPutRefsChunkResponse,
+    CancelRequestRequest, ChannelReceiverSamplesChunkRequest, ChannelReceiverSamplesChunkResponse,
     ExperimentRunResult, ExprActionResponse, GetBlobBatchRequest, HealthRequest, HealthResponse,
     InitBlobStoreRequest, InitMetadataStoreRequest, InitReceiverRequest, InitSenderRequest,
     NodeDescription, NodeRpc, PacedBlobGetRequest, PollExprRequest, PollExprResponse,
     PollRequestRequest, PollRequestResponse, PrepareBlobGetAppendRequest,
     PrepareBlobGetBeginRequest, PrepareBlobGetFinishRequest, PutBlobBatchRequest, RequestResult,
     ResetExprRequest, RunBlobGetRequest, RunBlobGetResponse, RunExperimentRequest,
-    StartPreparedBlobGetRequest,
+    StartChannelReceiverRequest, StartPacedChannelSendRequest, StartPreparedBlobGetRequest,
 };
 use crate::rpc::server::blob::{
     init_blob_store_on_node, prepare_blob_get_append_on_node, prepare_blob_get_begin_on_node,
     prepare_blob_get_finish_on_node, submit_blob_get_batch_on_node, submit_blob_put_batch_on_node,
     submit_paced_blob_get_on_node, submit_prepared_blob_get_on_node,
 };
+use crate::rpc::server::channel::{
+    submit_channel_receiver_on_node, submit_paced_channel_send_on_node,
+};
 use crate::rpc::server::state::{
-    action_response, begin_expr_on_node, blob_put_refs_chunk_on_node, create_request_on_node,
-    fail_request_on_node, finish_request_on_node, init_metadata_store_on_node,
-    init_receiver_on_node, init_sender_on_node, poll_expr_on_node, poll_request_on_node,
-    reset_expr_on_node, NodeRuntimeState,
+    action_response, begin_expr_on_node, blob_put_refs_chunk_on_node, cancel_request_on_node,
+    channel_receiver_samples_chunk_on_node, create_request_on_node, fail_request_on_node,
+    finish_request_on_node, init_metadata_store_on_node, init_receiver_on_node,
+    init_sender_on_node, poll_expr_on_node, poll_request_on_node, reset_expr_on_node,
+    NodeRuntimeState,
 };
 
 #[derive(Clone)]
@@ -111,7 +116,7 @@ impl NodeRpc for NodeRpcService {
     ) -> ExprActionResponse {
         action_response(
             &self.instance.id,
-            init_sender_on_node(&self.runtime, request).await,
+            init_sender_on_node(&self.instance, &self.runtime, request).await,
             &self.runtime,
         )
         .await
@@ -124,10 +129,26 @@ impl NodeRpc for NodeRpcService {
     ) -> ExprActionResponse {
         action_response(
             &self.instance.id,
-            init_receiver_on_node(&self.runtime, request).await,
+            init_receiver_on_node(&self.instance, &self.runtime, request).await,
             &self.runtime,
         )
         .await
+    }
+
+    async fn start_channel_receiver(
+        self,
+        _: context::Context,
+        request: StartChannelReceiverRequest,
+    ) -> AcceptedResponse {
+        submit_channel_receiver_on_node(&self.instance.id, self.runtime.clone(), request).await
+    }
+
+    async fn start_paced_channel_send(
+        self,
+        _: context::Context,
+        request: StartPacedChannelSendRequest,
+    ) -> AcceptedResponse {
+        submit_paced_channel_send_on_node(&self.instance.id, self.runtime.clone(), request).await
     }
 
     async fn put_blob_batch(
@@ -213,12 +234,33 @@ impl NodeRpc for NodeRpcService {
         poll_request_on_node(&self.instance.id, &self.runtime, request).await
     }
 
+    async fn cancel_request(
+        self,
+        _: context::Context,
+        request: CancelRequestRequest,
+    ) -> ExprActionResponse {
+        action_response(
+            &self.instance.id,
+            cancel_request_on_node(&self.runtime, request).await,
+            &self.runtime,
+        )
+        .await
+    }
+
     async fn get_blob_put_refs_chunk(
         self,
         _: context::Context,
         request: BlobPutRefsChunkRequest,
     ) -> BlobPutRefsChunkResponse {
         blob_put_refs_chunk_on_node(&self.instance.id, &self.runtime, request).await
+    }
+
+    async fn get_channel_receiver_samples_chunk(
+        self,
+        _: context::Context,
+        request: ChannelReceiverSamplesChunkRequest,
+    ) -> ChannelReceiverSamplesChunkResponse {
+        channel_receiver_samples_chunk_on_node(&self.instance.id, &self.runtime, request).await
     }
 
     async fn reset_expr(

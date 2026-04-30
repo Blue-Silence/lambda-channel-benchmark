@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod driver;
 mod experiments;
+mod metadata_store_factory;
 mod output;
 mod payload_file;
 mod roles;

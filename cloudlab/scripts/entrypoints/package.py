@@ -10,6 +10,8 @@ It clones:
 
 Alternatively, [package] benchmark_source = local copies the current benchmark
 working tree into the package so uncommitted local changes can be deployed.
+Likewise, [package] p2p_source = local copies the local .p2p-data-transfer
+working tree into the package.
 
 Then it places the private repo at:
 
@@ -164,6 +166,25 @@ def copy_local_benchmark_source(source_dir: Path, target_dir: Path) -> None:
             shutil.copy2(path, target, follow_symlinks=False)
 
 
+def copy_local_p2p_source(source_dir: Path, target_dir: Path) -> None:
+    source_dir = source_dir.resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    log(f"copying local p2p working tree: {source_dir}")
+
+    for path in sorted(source_dir.rglob("*")):
+        relative = path.relative_to(source_dir)
+        if should_exclude(relative, exclude_private_dependency=False):
+            continue
+
+        target = target_dir / relative
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        elif path.is_file() or path.is_symlink():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target, follow_symlinks=False)
+
+
 def copy_remote_build_script(workspace_dir: Path) -> None:
     source = SCRIPTS_DIR / "remote" / "remote_build.py"
     if not source.exists():
@@ -230,17 +251,24 @@ def should_exclude(relative_path: Path, *, exclude_private_dependency: bool = Tr
         ".venv",
         "results",
         "target",
+        "build",
+        "dist",
+        "expr",
+        ".bench",
         "__pycache__",
         ".pytest_cache",
         ".mypy_cache",
         ".ruff_cache",
+        ".demo_minio_mc",
         ".DS_Store",
     }
 
     if exclude_private_dependency:
         excluded_names.add(".p2p-data-transfer")
 
-    return any(part in excluded_names for part in relative_path.parts)
+    return any(
+        part in excluded_names or part.startswith(".demo_") for part in relative_path.parts
+    )
 
 
 def add_tree_to_tar(tar: tarfile.TarFile, source_dir: Path) -> None:
@@ -294,6 +322,7 @@ def main(argv: list[str] | None = None) -> PackageResult:
     benchmark_repo = cfg.get("package", "benchmark_repo")
     benchmark_ref = cfg.get("package", "benchmark_ref", fallback="main")
 
+    p2p_source = cfg.get("package", "p2p_source", fallback="git").strip().lower()
     p2p_repo = cfg.get("package", "p2p_repo")
     p2p_ref = cfg.get("package", "p2p_ref")
 
@@ -331,8 +360,19 @@ def main(argv: list[str] | None = None) -> PackageResult:
         log(f"removing existing p2p dependency: {p2p_dir}")
         shutil.rmtree(p2p_dir)
 
-    log("cloning private p2p repo")
-    clone_and_checkout(p2p_repo, p2p_ref, p2p_dir)
+    if p2p_source == "git":
+        log("cloning private p2p repo")
+        clone_and_checkout(p2p_repo, p2p_ref, p2p_dir)
+    elif p2p_source == "local":
+        local_p2p_dir = PROJECT_ROOT / ".p2p-data-transfer"
+        copy_local_p2p_source(local_p2p_dir, p2p_dir)
+        p2p_repo = str(local_p2p_dir)
+        p2p_ref = "local-working-tree"
+        dirty = git_status_short(local_p2p_dir)
+        if dirty:
+            log("local p2p working tree has uncommitted changes included in package")
+    else:
+        raise ValueError("unsupported [package] p2p_source; expected 'git' or 'local'")
 
     copy_remote_build_script(workspace_dir)
 

@@ -12,6 +12,8 @@ pub trait NodeRpc {
     async fn init_metadata_store(request: InitMetadataStoreRequest) -> ExprActionResponse;
     async fn init_sender(request: InitSenderRequest) -> ExprActionResponse;
     async fn init_receiver(request: InitReceiverRequest) -> ExprActionResponse;
+    async fn start_channel_receiver(request: StartChannelReceiverRequest) -> AcceptedResponse;
+    async fn start_paced_channel_send(request: StartPacedChannelSendRequest) -> AcceptedResponse;
     async fn put_blob_batch(request: PutBlobBatchRequest) -> AcceptedResponse;
     async fn get_blob_batch(request: GetBlobBatchRequest) -> AcceptedResponse;
     async fn get_blob_paced(request: PacedBlobGetRequest) -> AcceptedResponse;
@@ -21,7 +23,11 @@ pub trait NodeRpc {
     async fn start_prepared_blob_get(request: StartPreparedBlobGetRequest) -> AcceptedResponse;
     async fn poll_expr(request: PollExprRequest) -> PollExprResponse;
     async fn poll_request(request: PollRequestRequest) -> PollRequestResponse;
+    async fn cancel_request(request: CancelRequestRequest) -> ExprActionResponse;
     async fn get_blob_put_refs_chunk(request: BlobPutRefsChunkRequest) -> BlobPutRefsChunkResponse;
+    async fn get_channel_receiver_samples_chunk(
+        request: ChannelReceiverSamplesChunkRequest,
+    ) -> ChannelReceiverSamplesChunkResponse;
     async fn reset_expr(request: ResetExprRequest) -> ExprActionResponse;
     async fn submit_experiment(request: RunExperimentRequest) -> AcceptedResponse;
     async fn run_blob_get(request: RunBlobGetRequest) -> RunBlobGetResponse;
@@ -76,9 +82,15 @@ pub struct InitMetadataStoreRequest {
 pub struct InitSenderRequest {
     pub run_id: String,
     pub channel_id: String,
+    pub backend: Option<String>,
+    pub root_dir: Option<String>,
     pub reopen: bool,
     pub recover: bool,
     pub force_reinit: bool,
+    pub metadata_backend: Option<String>,
+    pub experiment: Option<ExperimentSpec>,
+    pub resource_id: Option<String>,
+    pub create_remote_resources: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,10 +98,16 @@ pub struct InitReceiverRequest {
     pub run_id: String,
     pub channel_id: String,
     pub consumer_id: String,
+    pub backend: Option<String>,
+    pub root_dir: Option<String>,
     pub start_seq: i64,
     pub consume_mode: String,
     pub passive_mode: bool,
     pub force_reinit: bool,
+    pub metadata_backend: Option<String>,
+    pub experiment: Option<ExperimentSpec>,
+    pub resource_id: Option<String>,
+    pub create_remote_resources: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -181,12 +199,68 @@ pub struct StartPreparedBlobGetRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StartPacedChannelSendRequest {
+    pub run_id: String,
+    pub count: usize,
+    pub object_size_bytes: u64,
+    pub target_ops_per_s: f64,
+    pub max_in_flight: usize,
+    pub payload_strategy: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StartChannelReceiverRequest {
+    pub run_id: String,
+    pub poll_target_ops_per_s: f64,
+    pub poll_concurrency: usize,
+    pub materialize_concurrency: usize,
+    pub output_subdir: String,
+    pub max_runtime_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PacedBlobGetResult {
     pub count: usize,
     pub total_bytes: u64,
     pub elapsed_ms: f64,
     pub materialized_dir: String,
     pub paced: PacedTaskRunReport,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChannelSendResult {
+    pub paced: PacedTaskRunReport,
+    pub sent_count: usize,
+    pub total_bytes: u64,
+    pub close_elapsed_ms: f64,
+    pub prestage_payload_ms: f64,
+    pub payload_strategy: String,
+    pub payload_dir: String,
+    pub failure_messages: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChannelReceiverResult {
+    pub delivered_count: usize,
+    pub delivered_bytes: u64,
+    pub empty_polls: u64,
+    pub transient_poll_errors: u64,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub eof_seq: Option<i64>,
+    pub eof_elapsed_ms: Option<f64>,
+    pub elapsed_ms: f64,
+    pub started_unix_ns: u64,
+    pub finished_unix_ns: u64,
+    pub materialized_dir: String,
+    pub poll_target_ops_per_s: f64,
+    pub poll_concurrency: usize,
+    pub materialize_concurrency: usize,
+    pub delivery_latency: crate::driver::latency::LatencySummary,
+    pub materialize_latency: crate::driver::latency::LatencySummary,
+    pub delivery_latency_samples_ms: Vec<f64>,
+    pub materialize_latency_samples_ms: Vec<f64>,
+    pub failure_messages: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,12 +271,19 @@ pub struct PollRequestRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CancelRequestRequest {
+    pub run_id: String,
+    pub req_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PollRequestResponse {
     pub ok: bool,
     pub instance_id: String,
     pub run_id: Option<String>,
     pub req_id: String,
     pub status: RequestStatus,
+    pub ready: bool,
     pub result: Option<RequestResult>,
     pub message: String,
 }
@@ -220,6 +301,8 @@ pub enum RequestResult {
     BlobPut(BlobPutResult),
     BlobGet(BlobGetResult),
     PacedBlobGet(PacedBlobGetResult),
+    ChannelSend(ChannelSendResult),
+    ChannelReceiver(ChannelReceiverResult),
     Experiment(ExperimentRunResult),
 }
 
@@ -243,6 +326,30 @@ pub struct BlobPutRefsChunkResponse {
     pub elapsed_ms: f64,
     pub offset: usize,
     pub refs: Vec<serde_json::Value>,
+    pub has_more: bool,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChannelReceiverSamplesChunkRequest {
+    pub run_id: String,
+    pub req_id: String,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChannelReceiverSamplesChunkResponse {
+    pub ok: bool,
+    pub instance_id: String,
+    pub run_id: Option<String>,
+    pub req_id: String,
+    pub status: RequestStatus,
+    pub offset: usize,
+    pub delivery_count: usize,
+    pub materialize_count: usize,
+    pub delivery_latency_samples_ms: Vec<f64>,
+    pub materialize_latency_samples_ms: Vec<f64>,
     pub has_more: bool,
     pub message: String,
 }
