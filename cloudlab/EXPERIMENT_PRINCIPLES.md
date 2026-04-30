@@ -144,6 +144,54 @@ Initial principle:
   instead of moving to a higher rate.
 - Do not continue into more expensive setup/preload work for higher rates after
   the measured phase has already shown saturation.
+- For `channel.single_sender_multi_receiver`, use receiver-delivered throughput
+  as the primary saturation signal. The generic `target_ops_per_s`,
+  `achieved_ops_per_s`, and `successful_ops_per_s` columns are mapped to
+  expected receiver delivery rate and aggregate delivered receiver rate, not to
+  sender push rate. Stop after sender-side saturation or after delivered
+  throughput stops improving materially across completed datapoints.
+
+### Channel Data-Plane Metrics
+
+`channel.single_sender_multi_receiver` measures end-to-end channel delivery,
+not a standalone blob or metadata operation. Interpret its CSV fields as
+follows:
+
+- `target_sender_ops_per_s` is the sender push target.
+- `expected_receiver_ops_per_s` is the expected aggregate receiver delivery
+  rate. For fanout it is `target_sender_ops_per_s * receiver_count`; for
+  competitive receive it is `target_sender_ops_per_s`.
+- `aggregate_delivered_ops_per_s` is the primary measured throughput. It is
+  computed from all delivered receiver elements over the global receiver
+  interval: earliest receiver start to latest receiver finish.
+- `sum_receiver_ops_per_s`, `mean_receiver_ops_per_s`,
+  `slowest_receiver_ops_per_s`, and `fastest_receiver_ops_per_s` are secondary
+  per-receiver rate summaries. Use them to understand imbalance, not as the
+  primary throughput number.
+- `sender_successful_push_ops_per_s`, `sender_limited`, and
+  `sender_limited_ratio` describe whether the sender could sustain the offered
+  push rate. If the sender is limited, receiver throughput is still useful but
+  should be reported as sender-limited.
+- `delivery_latency_*_ms` is the channel end-to-end latency. It is measured
+  from the sender timestamp patched into the payload immediately before
+  `sender.push(...)` to the receiver time after materializing the blob and
+  reading that payload header.
+- `materialize_latency_*_ms` is only the receiver materialization portion:
+  `BlobElemPtr::get_with_options(..., prefer_link = true)` until the file is
+  available locally. It is a breakdown of the delivery path, not the whole
+  channel latency.
+- For channel rows, the generic `offered_*_ms` and `service_*_ms` columns are
+  schema-compatibility aliases of `delivery_latency_*_ms`. Do not interpret
+  them as paced-task offered or service latency for channel plots.
+- For channel rows, `schedule_lag_*_ms` is not a meaningful datapath metric and
+  should not be used for analysis.
+- Per-receiver latency samples are collected in chunks by the orchestrator to
+  avoid oversized RPC responses, then aggregated for the CSV. Detailed
+  per-receiver behavior belongs in logs or JSON artifacts rather than expanded
+  CSV columns.
+- Failed tasks at the final high-pressure datapoints are overload signals. They
+  may be retained for peak/saturation evidence, but normal-service latency
+  claims should emphasize the pre-overload or low-failure datapoints.
 
 ### Workflow Health Checks
 
@@ -167,9 +215,9 @@ but they should not be presented as data-plane throughput.
 Formal size sweep:
 
 - `32B`
-- `4KiB`
-- `64KiB`
-- `1MiB`
+- `16MiB`
+- `128MiB`
+- `1GiB`
 
 ### Concurrency
 
