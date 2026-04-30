@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use crate::blob_store_factory::unique_resource_id;
 use crate::config::{ExperimentSpec, InstanceConfig, InstancesConfig};
 use crate::driver::latency::LatencySummary;
-use crate::driver::sweep::{SweepDecision, SweepStopReason, ThroughputSweepPolicy};
+use crate::driver::sweep::{SweepStopReason, ThroughputSweepPolicy};
 use crate::rpc::protocol::{
     ChannelReceiverResult, ChannelSendResult, InitReceiverRequest, InitSenderRequest,
     StartChannelReceiverRequest, StartPacedChannelSendRequest,
@@ -24,6 +24,8 @@ use super::control::{
 
 const POLL_TARGET_MULTIPLIER: f64 = 2.0;
 const DEFAULT_MIN_ELEMENTS_PER_DATAPOINT: usize = 1;
+const MIN_POINTS_BEFORE_PLATEAU_CUTOFF: usize = 3;
+const PLATEAU_MIN_GROWTH_RATIO: f64 = 0.05;
 
 pub(super) async fn run(
     instance: &InstanceConfig,
@@ -67,6 +69,7 @@ pub(super) async fn run(
     let datapoint_element_bounds = datapoint_element_bounds(&experiment)?;
     let mut datapoints = Vec::new();
     let mut stop_reason = SweepStopReason::MaxPoints;
+    let mut best_delivered_ops_per_s = 0.0_f64;
     for (index, target_sender_ops_per_s) in target_rates.into_iter().enumerate() {
         let element_count = operations_for_rate(
             target_sender_ops_per_s,
@@ -91,20 +94,26 @@ pub(super) async fn run(
         )
         .await?;
         let failed_tasks = datapoint.paced.failed_tasks;
-        let decision = policy.decide_after_metrics(
-            datapoints.len() + 1,
-            datapoint.expected_receiver_ops_per_s,
-            datapoint.aggregate_delivered_ops_per_s,
-            failed_tasks,
-        );
+        let completed_points = datapoints.len() + 1;
+        let delivered_ops_per_s = datapoint.aggregate_delivered_ops_per_s;
+        let improved_over_best =
+            delivered_ops_per_s > best_delivered_ops_per_s * (1.0 + PLATEAU_MIN_GROWTH_RATIO);
+        let plateaued = completed_points >= MIN_POINTS_BEFORE_PLATEAU_CUTOFF
+            && !improved_over_best
+            && best_delivered_ops_per_s > 0.0;
         let sender_limited = datapoint.sender_limited;
         datapoints.push(datapoint);
+        best_delivered_ops_per_s = best_delivered_ops_per_s.max(delivered_ops_per_s);
+        if policy.stop_on_failure && failed_tasks > 0 {
+            stop_reason = SweepStopReason::FailedTasks;
+            break;
+        }
         if sender_limited {
             stop_reason = SweepStopReason::Saturated;
             break;
         }
-        if let SweepDecision::Stop { reason } = decision {
-            stop_reason = reason;
+        if plateaued {
+            stop_reason = SweepStopReason::Saturated;
             break;
         }
     }
